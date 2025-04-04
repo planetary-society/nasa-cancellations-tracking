@@ -2,6 +2,7 @@ import requests
 import json
 from typing import Any, Dict, Optional, List, Union # Added Union
 from datetime import datetime # Added for potential date parsing if needed later
+from utils import smart_sentence_case
 import time
 
 # Configuration
@@ -414,7 +415,8 @@ class Award:
         """Returns the award description."""
         # Lookup key: 'description'
         # Search key: 'Description'
-        return str(self._data.get("description") or self._data.get("Description") or "")
+        desc = str(self._data.get("description") or self._data.get("Description") or "")
+        return smart_sentence_case(desc)
 
     @property
     def total_obligations(self) -> float:
