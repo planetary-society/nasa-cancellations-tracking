@@ -8,6 +8,7 @@ import time
 AWARD_LOOKUP_BASE_URL = "https://api.usaspending.gov/api/v2/awards/"
 AWARD_SEARCH_URL = "https://api.usaspending.gov/api/v2/search/spending_by_award/"
 TRANSACTIONS_URL = "https://api.usaspending.gov/api/v2/transactions/"
+DEFAULT_TIMEOUT = 30 # Seconds for API requests
 
 # --- Helper Classes for Standardization ---
 
@@ -618,17 +619,23 @@ class Award:
 class USASpendingClient:
     """
     A client class to interact with the USAspending.gov API v2.
-    Provides methods to fetch award details via lookup and search endpoints.
+
+    Provides methods to fetch award details via lookup (/awards/{id}) and
+    search (/search/spending_by_award) endpoints, as well as related
+    transaction data (/transactions/). It uses a central helper method
+    for making API requests and handling common errors.
     """
     # --- Award Type Code Constants (Grouped by API constraints) ---
-    CONTRACT_CODES: List[str] = ["A", "B", "C", "D"]
-    IDV_CODES: List[str] = ["IDV_A", "IDV_B", "IDV_B_A", "IDV_B_B", "IDV_B_C", "IDV_C", "IDV_D", "IDV_E"]
-    GRANT_CODES: List[str] = ["02", "03", "04", "05"]
-    LOAN_CODES: List[str] = ["07", "08"]
-    DIRECT_PAYMENT_CODES: List[str] = ["06", "10"]
-    INSURANCE_OTHER_FA_CODES: List[str] = ["09", "11", "-1"]
+    # These lists define valid groups of award_type_codes for API filtering.
+    # The API generally requires filtering by only one group per search request.
+    CONTRACT_CODES: List[str] = ["A", "B", "C", "D"] # BPA Call, PO, Delivery Order, Definitive Contract
+    IDV_CODES: List[str] = ["IDV_A", "IDV_B", "IDV_B_A", "IDV_B_B", "IDV_B_C", "IDV_C", "IDV_D", "IDV_E"] # GWAC, IDC, FSS, BOA, BPA IDV
+    GRANT_CODES: List[str] = ["02", "03", "04", "05"] # Block, Formula, Project Grant, Coop Agreement
+    LOAN_CODES: List[str] = ["07", "08"] # Direct Loan, Guaranteed/Insured Loan
+    DIRECT_PAYMENT_CODES: List[str] = ["06", "10"] # Direct Payment for Specified Use, Unrestricted Use
+    INSURANCE_OTHER_FA_CODES: List[str] = ["09", "11", "-1"] # Insurance, Other Financial Assistance, Not Specified
 
-    # --- Base Requestable Fields (Common across most types) ---
+    # --- Base Requestable Fields (Common across most award search types) ---
     _BASE_SEARCH_FIELDS = [
         "Award ID", "Recipient Name", "Recipient DUNS Number", "recipient_id",
         "Awarding Agency", "Awarding Agency Code", "Awarding Sub Agency", "Awarding Sub Agency Code",
@@ -641,98 +648,167 @@ class USASpendingClient:
         "Infrastructure Obligations", "Infrastructure Outlays"
     ]
 
-    # --- Group-Specific Requestable Fields ---
-    CONTRACT_SEARCH_FIELDS: List[str] = sorted(list(set(
-        _BASE_SEARCH_FIELDS + ["Start Date", "End Date", "Award Amount", "Total Outlays", "Contract Award Type"]
-    )))
-    IDV_SEARCH_FIELDS: List[str] = sorted(list(set(
-        _BASE_SEARCH_FIELDS + ["Start Date", "Award Amount", "Total Outlays", "Contract Award Type", "Last Date to Order"]
-    )))
-    # Non-Loan Assistance covers Grants, Direct Payments, Insurance/Other
+    # --- Group-Specific Requestable Fields Lists ---
+    # Combines base fields with fields specific to each award group,
+    # ensuring only valid fields are requested for each search type.
+    _CONTRACT_FIELDS = ["Start Date", "End Date", "Award Amount", "Total Outlays", "Contract Award Type"]
+    CONTRACT_SEARCH_FIELDS: List[str] = sorted(list(set(_BASE_SEARCH_FIELDS + _CONTRACT_FIELDS)))
+
+    _IDV_FIELDS = ["Start Date", "Award Amount", "Total Outlays", "Contract Award Type", "Last Date to Order"]
+    IDV_SEARCH_FIELDS: List[str] = sorted(list(set(_BASE_SEARCH_FIELDS + _IDV_FIELDS)))
+
+    # Non-Loan Assistance fields apply to Grants, Direct Payments, Insurance/Other FA
     _NON_LOAN_ASSIST_FIELDS = ["Start Date", "End Date", "Award Amount", "Total Outlays", "Award Type", "SAI Number", "CFDA Number"]
     GRANT_SEARCH_FIELDS: List[str] = sorted(list(set(_BASE_SEARCH_FIELDS + _NON_LOAN_ASSIST_FIELDS)))
     DIRECT_PAYMENT_SEARCH_FIELDS: List[str] = sorted(list(set(_BASE_SEARCH_FIELDS + _NON_LOAN_ASSIST_FIELDS)))
     INSURANCE_OTHER_FA_SEARCH_FIELDS: List[str] = sorted(list(set(_BASE_SEARCH_FIELDS + _NON_LOAN_ASSIST_FIELDS)))
-    # Loans have specific fields
-    LOAN_SEARCH_FIELDS: List[str] = sorted(list(set(
-        _BASE_SEARCH_FIELDS + ["Issued Date", "Loan Value", "Subsidy Cost", "SAI Number", "CFDA Number"]
-    )))
+
+    # Loans have unique fields related to loan values
+    _LOAN_FIELDS = ["Issued Date", "Loan Value", "Subsidy Cost", "SAI Number", "CFDA Number"]
+    LOAN_SEARCH_FIELDS: List[str] = sorted(list(set(_BASE_SEARCH_FIELDS + _LOAN_FIELDS)))
 
     # --- Default Sort Fields per Group ---
-    DEFAULT_SORT_FIELD = "Award Amount"
-    LOAN_SORT_FIELD = "Loan Value" # Use Loan Value for sorting loans
+    # Defines the default field used for sorting search results.
+    DEFAULT_SORT_FIELD = "Award Amount" # Used for most types
+    LOAN_SORT_FIELD = "Loan Value"      # Specific sort field required for loans
 
     def __init__(self, award_lookup_base_url: str = AWARD_LOOKUP_BASE_URL, award_search_url: str = AWARD_SEARCH_URL, transactions_url: str = TRANSACTIONS_URL):
-        """Initializes the USASpendingClient."""
+        """
+        Initializes the USASpendingClient.
+
+        Args:
+            award_lookup_base_url: Base URL for the award lookup endpoint.
+            award_search_url: URL for the award search endpoint.
+            transactions_url: URL for the transactions endpoint.
+        """
         self.award_lookup_base_url = award_lookup_base_url
         self.award_search_url = award_search_url
-        self.transactions_url = transactions_url # Store transactions endpoint URL
+        self.transactions_url = transactions_url
         self.default_headers = {"Content-Type": "application/json"}
+        # Use a requests.Session object to persist headers and potentially cookies,
+        # and enable connection pooling for performance.
         self._session = requests.Session()
         self._session.headers.update(self.default_headers)
+
+    # --- Central API Request Helper ---
+    def _make_api_request(self,
+                          method: str,
+                          url: str,
+                          params: Optional[Dict[str, Any]] = None,
+                          json_payload: Optional[Dict[str, Any]] = None,
+                          caller_info: str = "Unknown") -> Optional[Dict[str, Any]]:
+        """
+        Internal helper method to make API requests and handle common errors.
+
+        This centralizes request logic (GET/POST), timeout handling,
+        response status checking, JSON decoding, and error logging.
+
+        Args:
+            method: HTTP method ('GET', 'POST', etc.).
+            url: The target API endpoint URL.
+            params: Dictionary of query parameters for GET requests.
+            json_payload: Dictionary payload for POST/PUT requests.
+            caller_info: String identifying the calling method for logging purposes.
+
+        Returns:
+            Parsed JSON dictionary on success (status 2xx, valid JSON, no API error msg),
+            None on any failure (network error, timeout, HTTP error, JSON decode error,
+            API error message within JSON response).
+        """
+        try:
+            # Make the request using the session object
+            response = self._session.request(
+                method=method,
+                url=url,
+                params=params,
+                json=json_payload,
+                timeout=DEFAULT_TIMEOUT
+            )
+
+            # Check content type for potential non-JSON error pages
+            content_type = response.headers.get('Content-Type', '')
+            is_json = 'application/json' in content_type
+
+            # Check for successful HTTP status code (2xx) and JSON content
+            if response.ok and is_json:
+                try:
+                    data = response.json()
+                    # Check for API-level errors embedded in the JSON response body
+                    # (sometimes API returns 200 OK but includes an error message)
+                    if "message" in data or "detail" in data:
+                        error_detail = data.get("message", data.get("detail", "Unknown API error in response body"))
+                        print(f"API Error ({caller_info}, Status {response.status_code}): {error_detail}")
+                        return None # Treat as failure
+                    return data # Successful response with valid JSON
+                except json.JSONDecodeError as e:
+                    # Handle cases where response claims to be JSON but isn't valid
+                    print(f"JSON Decode Error ({caller_info}, Status {response.status_code}): {e}")
+                    print(f"Response text: {response.text[:500]}...")
+                    return None
+            # Handle unsuccessful HTTP status codes (4xx, 5xx) or non-JSON responses
+            else:
+                error_snippet = response.text[:500] if not is_json else "Check logs for JSON error details."
+                print(f"HTTP Error ({caller_info}): Status {response.status_code}, Content-Type: {content_type}")
+                print(f"Response text snippet: {error_snippet}...")
+                # Consider raising response.raise_for_status() here if specific error handling is needed
+                return None
+
+        except requests.exceptions.Timeout:
+            # Handle request timeout
+            print(f"Request Timeout ({caller_info}): Request to {url} exceeded {DEFAULT_TIMEOUT} seconds.")
+            return None
+        except requests.exceptions.RequestException as e:
+            # Handle other network/request errors (connection, redirects, etc.)
+            print(f"Network/Request Error ({caller_info}): {e}")
+            # Log response details if available in the exception
+            if hasattr(e, 'response') and e.response is not None:
+                 print(f"  Response Status: {e.response.status_code}")
+                 print(f"  Response Text: {e.response.text[:500]}...")
+            return None
+        except Exception as e:
+            # Catch any other unexpected errors during the request
+            print(f"An unexpected error occurred during API request ({caller_info}): {e}")
+            return None
+
+    # --- Refactored Public Methods ---
 
     def get_transactions(self, award_id: str, page: int = 1, limit: int = 100) -> Optional[Dict[str, Any]]:
         """
         Fetches a single page of transactions for a given award ID.
+        Uses the central _make_api_request helper for the API call.
 
         Args:
-            award_id: The award ID (preferably generated_unique_award_id).
+            award_id: The award ID (preferably generated_unique_award_id or generated_internal_id).
             page: The page number to retrieve.
-            limit: The number of results per page.
+            limit: The number of results per page (max 5000 according to docs).
 
         Returns:
             The parsed JSON response dictionary containing 'results' and 'page_metadata',
-            or None if an error occurs.
+            or None if an error occurs during the API request.
         """
-        if not award_id:
-            print("Error: get_transactions requires an award_id.")
-            return None
+        if not award_id: print("Error: get_transactions requires an award_id."); return None
+        # Prepare payload for the POST request
+        payload = {"award_id": award_id, "page": page, "limit": limit, "sort": "action_date", "order": "desc"}
+        caller_info = f"get_transactions(award={award_id}, page={page})"
 
-        payload = {
-            "award_id": award_id,
-            "page": page,
-            "limit": limit,
-            "sort": "action_date", # Default sort for transactions
-            "order": "desc"
-        }
-        try:
-            response = self._session.post(self.transactions_url, json=payload)
-            # Check for API errors returned in JSON even with 200 status
-            if response.status_code == 200 and 'application/json' in response.headers.get('Content-Type', ''):
-                data = response.json()
-                # Some API errors might still be in the JSON body with status 200
-                if "message" in data or "detail" in data:
-                     error_detail = data.get("message", data.get("detail", "Unknown API error in response body"))
-                     print(f"API Error fetching transactions page {page} for {award_id} (Status {response.status_code}): {error_detail}")
-                     return None # Indicate error
-                return data # Return successful data
-            # Handle non-200 or non-JSON responses
-            else:
-                print(f"Error fetching transactions page {page} for {award_id}: Status {response.status_code}")
-                print(f"Response text: {response.text[:500]}...")
-                # Optionally raise for non-200 errors if preferred
-                # response.raise_for_status()
-                return None
-
-        except requests.exceptions.RequestException as e:
-            print(f"Network/HTTP Error during transaction request: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON transaction response: {e}")
-            return None
-        except Exception as e:
-            print(f"An unexpected error occurred fetching transactions: {e}")
-            return None
+        # Call the helper method
+        return self._make_api_request(
+            method="POST",
+            url=self.transactions_url,
+            json_payload=payload,
+            caller_info=caller_info
+        )
 
     def award_search(self,
                      keywords: List[str],
                      award_type_codes: List[str],
                      fields: List[str],
-                     sort: str, 
+                     sort: str,
                      limit: int = 100,
                      page: int = 1) -> List[Award]:
         """
-        Performs a search for awards based on keywords, type codes, specific fields, and sort order.
+        Performs a search for awards, returning a list of Award objects.
+        Uses the central _make_api_request helper for the API call.
         **Note:** award_type_codes must only contain types from a single valid API group.
 
         Args:
@@ -746,81 +822,100 @@ class USASpendingClient:
         Returns:
             A list of Award objects matching the search criteria, or an empty list on error.
         """
+        # Input validation
         if not keywords: print("Warning: award_search called with empty keywords list."); return []
         if not award_type_codes: print("Error: award_search requires award_type_codes."); return []
         if not fields: print("Error: award_search requires fields list."); return []
         if not sort: print("Error: award_search requires sort field."); return []
 
-        start_date = "2007-10-01"; end_date = "2025-09-30"
+        # Define default time period filter
+        start_date = "2007-10-01"; end_date = "2025-09-30" # Covers most data
+
+        # Construct the payload for the POST request
         payload = {
             "filters": {"keywords": keywords, "time_period": [{"start_date": start_date, "end_date": end_date}], "award_type_codes": award_type_codes},
-            "fields": fields, # Use provided fields list
-            "page": page, "limit": limit,
-            "sort": sort, # Use provided sort field
-            "order": "desc", # Keep descending order as default
-            "subawards": False
+            "fields": fields, "page": page, "limit": limit, "sort": sort, "order": "desc", "subawards": False
         }
-        try:
-            response = self._session.post(self.award_search_url, json=payload)
-            if 'application/json' in response.headers.get('Content-Type', ''):
-                data = response.json()
-                if response.status_code != 200 or "message" in data or "detail" in data:
-                    error_detail = data.get("message", data.get("detail", f"Non-JSON response: {response.text[:200]}"))
-                    print(f"API Error searching types {award_type_codes} (Status {response.status_code}, Sort: {sort}): {error_detail}")
-                    return []
-                results = data.get("results", [])
-                return [Award(result_data, client=self) for result_data in results]
-            else:
-                print(f"Error: Unexpected content type from search: {response.headers.get('Content-Type')}")
-                print(f"Response Status: {response.status_code}"); print(f"Response text: {response.text[:500]}...")
-                response.raise_for_status(); return []
-        except requests.exceptions.RequestException as e:
-            print(f"Network/HTTP Error during API search request: {e}")
-            if hasattr(e, 'response') and e.response is not None: print(f"API Response Status: {e.response.status_code}"); print(f"API Response Text: {e.response.text[:500]}...")
-            return []
-        except json.JSONDecodeError as e: print(f"Error decoding JSON search response: {e}"); return []
-        except Exception as e: print(f"An unexpected error occurred during award search: {e}"); return []
+        caller_info = f"award_search(types={award_type_codes}, sort={sort}, page={page})"
 
-    # --- Helper Search Methods (Pass specific fields and sort) ---
+        # Call the helper method
+        data = self._make_api_request(
+            method="POST",
+            url=self.award_search_url,
+            json_payload=payload,
+            caller_info=caller_info
+        )
+
+        # Process the results if the call was successful
+        if data:
+            results = data.get("results", [])
+            # Convert results into Award objects, passing the client instance for lazy loading
+            return [Award(result_data, client=self) for result_data in results]
+        else:
+            # Return empty list if the API request failed
+            return []
+
+    def award_lookup(self, usa_spending_award_id: str) -> Optional[Award]:
+        """
+        Fetches award details for a specific USAspending award ID.
+        Uses the central _make_api_request helper for the API call.
+
+        Args:
+            usa_spending_award_id: The unique award identifier (e.g., generated_unique_award_id).
+
+        Returns:
+            An Award object containing the fetched data, or None if an error occurs.
+        """
+        if not usa_spending_award_id: print("Error: usa_spending_award_id cannot be empty."); return None
+        # Construct the specific endpoint URL for the lookup
+        endpoint = f"{self.award_lookup_base_url}{usa_spending_award_id}"
+        caller_info = f"award_lookup(id={usa_spending_award_id})"
+
+        # Call the helper method using GET
+        data = self._make_api_request(
+            method="GET",
+            url=endpoint,
+            caller_info=caller_info
+            # No params or payload needed for this GET request
+        )
+
+        # Process the result if the call was successful
+        if data:
+            # Create Award object, passing the client instance for lazy loading
+            return Award(data, client=self)
+        else:
+            # Return None if the API request failed
+            return None
+
+    # --- Helper Search Methods (Call refactored award_search) ---
+    # These provide convenient shortcuts for searching specific award groups.
+    # They now simply pass the correct parameters (codes, fields, sort) to award_search.
 
     def contract_search(self, keywords: List[str], limit: int = 100) -> List[Award]:
         """Searches specifically for Contracts based on keywords."""
-        print(f"Searching contracts matching keywords: {keywords}")
-        return self.award_search(keywords=keywords, award_type_codes=self.CONTRACT_CODES,
-                                 fields=self.CONTRACT_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
+        return self.award_search(keywords=keywords, award_type_codes=self.CONTRACT_CODES, fields=self.CONTRACT_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
 
     def idv_search(self, keywords: List[str], limit: int = 100) -> List[Award]:
         """Searches specifically for Indefinite Delivery Vehicles (IDVs) based on keywords."""
-        print(f"Searching IDVs matching keywords: {keywords}")
-        return self.award_search(keywords=keywords, award_type_codes=self.IDV_CODES,
-                                 fields=self.IDV_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
+        return self.award_search(keywords=keywords, award_type_codes=self.IDV_CODES, fields=self.IDV_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
 
     def grant_search(self, keywords: List[str], limit: int = 100) -> List[Award]:
         """Searches specifically for Grants (types 02-05) based on keywords."""
-        print(f"Searching grants matching keywords: {keywords}")
-        return self.award_search(keywords=keywords, award_type_codes=self.GRANT_CODES,
-                                 fields=self.GRANT_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
+        return self.award_search(keywords=keywords, award_type_codes=self.GRANT_CODES, fields=self.GRANT_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
 
     def loan_search(self, keywords: List[str], limit: int = 100) -> List[Award]:
         """Searches specifically for Loans (types 07-08) based on keywords."""
-        print(f"Searching loans matching keywords: {keywords}")
-        return self.award_search(keywords=keywords, award_type_codes=self.LOAN_CODES,
-                                 fields=self.LOAN_SEARCH_FIELDS, sort=self.LOAN_SORT_FIELD, limit=limit) # Use LOAN_SORT_FIELD
+        return self.award_search(keywords=keywords, award_type_codes=self.LOAN_CODES, fields=self.LOAN_SEARCH_FIELDS, sort=self.LOAN_SORT_FIELD, limit=limit)
 
     def direct_payment_search(self, keywords: List[str], limit: int = 100) -> List[Award]:
         """Searches specifically for Direct Payments (types 06, 10) based on keywords."""
-        print(f"Searching direct payments (06, 10) matching keywords: {keywords}")
-        return self.award_search(keywords=keywords, award_type_codes=self.DIRECT_PAYMENT_CODES,
-                                 fields=self.DIRECT_PAYMENT_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
+        return self.award_search(keywords=keywords, award_type_codes=self.DIRECT_PAYMENT_CODES, fields=self.DIRECT_PAYMENT_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
 
     def insurance_other_fa_search(self, keywords: List[str], limit: int = 100) -> List[Award]:
         """Searches specifically for Insurance and Other Financial Assistance (types 09, 11, -1)."""
-        print(f"Searching insurance/other FA (09, 11, -1) matching keywords: {keywords}")
-        return self.award_search(keywords=keywords, award_type_codes=self.INSURANCE_OTHER_FA_CODES,
-                                 fields=self.INSURANCE_OTHER_FA_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
+        return self.award_search(keywords=keywords, award_type_codes=self.INSURANCE_OTHER_FA_CODES, fields=self.INSURANCE_OTHER_FA_SEARCH_FIELDS, sort=self.DEFAULT_SORT_FIELD, limit=limit)
 
-    # --- Combined Search (Multiple API Calls with specific fields/sort) ---
-
+    # --- Combined Search (Calls refactored award_search multiple times) ---
     def all_award_search(self, keywords: List[str], limit: int = 100) -> List[Award]:
         """
         Searches across all major award groups by making separate, optimized API calls
@@ -834,9 +929,10 @@ class USASpendingClient:
             A combined list of unique Award objects found across the searches.
         """
         print(f"Searching all award types matching keywords: {keywords} (limit {limit} per type group)")
+        # Use a dictionary to store results, keyed by award ID to handle duplicates
         combined_results_dict: Dict[str, Award] = {}
 
-        # Define searches with their specific codes, fields, and sort parameters
+        # Define the parameters for each search task
         search_tasks = [
             {"name": "Contracts", "codes": self.CONTRACT_CODES, "fields": self.CONTRACT_SEARCH_FIELDS, "sort": self.DEFAULT_SORT_FIELD},
             {"name": "IDVs", "codes": self.IDV_CODES, "fields": self.IDV_SEARCH_FIELDS, "sort": self.DEFAULT_SORT_FIELD},
@@ -846,8 +942,10 @@ class USASpendingClient:
             {"name": "Insurance/Other FA (09,11,-1)", "codes": self.INSURANCE_OTHER_FA_CODES, "fields": self.INSURANCE_OTHER_FA_SEARCH_FIELDS, "sort": self.DEFAULT_SORT_FIELD},
         ]
 
+        # Execute each search task
         for task in search_tasks:
             print(f" -> Searching {task['name']}...")
+            # Call the refactored award_search method
             results = self.award_search(
                 keywords=keywords,
                 award_type_codes=task["codes"],
@@ -856,71 +954,14 @@ class USASpendingClient:
                 limit=limit
             )
             print(f"    Found {len(results)} {task['name'].lower()} results.")
+            # Add unique results to the combined dictionary
             for award in results:
-                award_id = award.prime_award_id
+                award_id = award.prime_award_id # Use property to get consistent ID
                 if award_id and award_id not in combined_results_dict:
                     combined_results_dict[award_id] = award
 
+        # Convert the dictionary values (unique Award objects) back to a list
         final_results = list(combined_results_dict.values())
         print(f"Total unique awards found across all types: {len(final_results)}")
         return final_results
-
-    def award_lookup(self, usa_spending_award_id: str) -> Optional[Award]:
-        """
-        Fetches award details for a specific USAspending award ID using the lookup endpoint.
-
-        Args:
-            usa_spending_award_id: The unique identifier for the award
-                                   (e.g., 'CONT_AWD_H907_9700_SPE2DX16D1500_9700').
-                                   This should typically be the generated_unique_award_id.
-
-        Returns:
-            An Award object containing the fetched data, or None if an error occurs
-            or the award is not found.
-        """
-        if not usa_spending_award_id:
-            print("Error: usa_spending_award_id cannot be empty.")
-            return None
-
-        endpoint = f"{self.award_lookup_base_url}{usa_spending_award_id}"
-
-        try:
-            response = self._session.get(endpoint)
-            response.raise_for_status()
-
-            if 'application/json' in response.headers.get('Content-Type', ''):
-                award_data = response.json()
-                return Award(award_data, client=self)
-            else:
-                print(f"Error: Unexpected content type received from lookup: {response.headers.get('Content-Type')}")
-                print(f"Response text: {response.text[:500]}...")
-                return None
-
-        except requests.exceptions.RequestException as e:
-            print(f"Error during API lookup request to {endpoint}: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                 print(f"API Response Status: {e.response.status_code}")
-                 print(f"API Response Text: {e.response.text[:500]}...")
-            return None
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON lookup response from {endpoint}: {e}")
-            print(f"Response text: {response.text[:500]}...")
-            return None
-        except Exception as e:
-            print(f"An unexpected error occurred during award lookup: {e}")
-            return None
-
-# --- Example Usage (Illustrative) ---
-# if __name__ == "__main__":
-#     client = USASpendingClient()
-#
-#     print("\n--- Testing Corrected All Award Search ---")
-#     keywords = ["Specific Company Name"] # Replace with actual keywords
-#     all_awards_corrected = client.all_award_search(keywords=keywords, limit=10) # Small limit for example
-#
-#     if all_awards_corrected:
-#         print(f"\nFound {len(all_awards_corrected)} unique awards for '{keywords[0]}':")
-#         # Further analysis or printing can be done here
-#     else:
-#         print(f"No awards found for keywords '{keywords}'.")
 
