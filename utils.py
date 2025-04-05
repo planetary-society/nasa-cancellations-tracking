@@ -1,6 +1,7 @@
 import re
 import logging
 from typing import Set, Optional
+from titlecase import titlecase
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -116,7 +117,6 @@ def smart_sentence_case(
         # Returning original might be safer if processing fails unexpectedly.
         return text # Fallback to original text on error
 
-from titlecase import titlecase
 
 # Define a callback function for custom word handling
 def custom_titlecase_callback(word, **kwargs):
