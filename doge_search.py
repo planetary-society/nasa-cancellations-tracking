@@ -10,6 +10,7 @@ from contract_query import ContractQuery, FINAL_COLUMNS
 import datetime
 from urllib.parse import urlparse, parse_qs
 import csv
+from utils import smart_sentence_case, contracts_titlecase
 
 # Default DoGE API settings
 DOGE_CONTRACTS_ENDPOINT = "https://api.doge.gov/savings/contracts"
@@ -109,6 +110,7 @@ class DOGEQuery(ContractQuery):
                 self._log(f"Warning: Could not parse Award ID (PIID) from a provided URL. Error: {e}")
                 # award_id remains ""
         return award_id
+    
     def _extract_usa_spending_award_id_from_grant_url(self, url: Optional[str]) -> str:
         """
         Attempts to extract the 'fain' parameter value from a URL string.
@@ -155,13 +157,13 @@ class DOGEQuery(ContractQuery):
             standardized = {
                 "Award ID": award_id,
                 "source_type": "Contract",
-                "date": item.get("deleted_date"),
-                "recipient": item.get("vendor"),
+                "deleted date": item.get("deleted_date"),
+                "recipient": contracts_titlecase(item.get("vendor")),
                 "value": item.get("value"),
                 "savings": item.get("savings"),
                 "status": item.get("fpds_status", ""),
                 "source_url": item.get("fpds_link"),
-                "description": item.get("description"),
+                "description": "DOGE Cancellation Date: " + item.get("deleted_date") + ". " + smart_sentence_case(item.get("description")),
                 "agency": agency_name
             }
         elif item_type == "Grant":
@@ -176,13 +178,13 @@ class DOGEQuery(ContractQuery):
             standardized = {
                 "Award ID": award_id,
                 "source_type": "Grant",
-                "date": item.get("date"),
-                "recipient": item.get("recipient"),
+                "deleted date": item.get("date"),
+                "recipient": contracts_titlecase(item.get("recipient")),
                 "value": item.get("value"),
                 "savings": item.get("savings"),
                 "status": "",
                 "source_url": item.get("link"),
-                "description": item.get("description"),
+                "description": "DOGE Cancellation Date: " + item.get("date") + ". " + smart_sentence_case(item.get("description")),
                 "agency": agency_name
             }
             time.sleep(0.1) # Optional delay to avoid overwhelming the API
