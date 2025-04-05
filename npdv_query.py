@@ -10,6 +10,8 @@ import os
 import csv # Import csv module
 from urllib.parse import urlparse
 from typing import List, Tuple, Dict, Any, Optional
+from datetime import datetime
+
 
 # Assuming contract_query.py contains the base class and FINAL_COLUMNS
 try:
@@ -75,6 +77,36 @@ class NPDVQuery(ContractQuery):
         except Exception as e:
             logging.error(f"Failed to generate filename from URL '{url}': {e}")
             return None
+
+    @staticmethod
+    def _format_date_iso(date_str: str) -> str:
+        """
+        Attempts to parse a date string (expected format M/D/YY) and
+        formats it as YYYY-MM-DD.
+
+        Args:
+            date_str: The input date string (e.g., "10/31/23", "4/26/25").
+
+        Returns:
+            The formatted date string (YYYY-MM-DD) or an empty string if
+            input is empty or parsing fails.
+        """
+        if not date_str or not date_str.strip():
+            return "" # Handle empty or whitespace strings
+
+        input_format = '%m/%d/%Y'
+        output_format = '%Y-%m-%d'
+
+        try:
+            # Parse the input string using the expected format
+            parsed_date = datetime.strptime(date_str.strip(), input_format)
+            # Format the datetime object into the desired output string format
+            formatted_date = parsed_date.strftime(output_format)
+            return formatted_date
+        except (ValueError, TypeError) as e:
+            # Log a warning if parsing fails
+            logging.warning(f"Could not parse date string '{date_str}' using format '{input_format}'. Returning empty string. Error: {e}")
+            return "" # Return empty string on failure
 
     @staticmethod
     def parse_mod_number(contract_mod_str: Optional[str]) -> Tuple[str, int]:
@@ -229,10 +261,17 @@ class NPDVQuery(ContractQuery):
                     award_type_str = row_dict.get('Award Type', '').lower()
                     source_type = "Grant" if "grant" in award_type_str else "Contract"
 
+                    # --- Format the Completion Date ---
+                    completion_date_str = row_dict.get('Completion Date', '')
+                    # Call the new helper method to parse and format
+                    formatted_deleted_date = self._format_date_iso(completion_date_str)
+                    logging.debug(f"Award ID {award_id}: Original Completion Date='{completion_date_str}', Formatted='{formatted_deleted_date}'")
+                    # --- End Formatting ---
+                    
                     output_row_data = {
                         'Award ID': award_id, # Use the reliable parsed award_id
                         'source_type': source_type,
-                        'deleted date': row_dict.get('Completion Date', ''),
+                        'deleted date': formatted_deleted_date,
                         'recipient': row_dict.get('Contractor', ''),
                         'value': "",
                         'savings': "",
