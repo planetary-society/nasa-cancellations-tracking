@@ -115,3 +115,41 @@ def smart_sentence_case(
         # Decide on fallback behavior: return original text or empty string?
         # Returning original might be safer if processing fails unexpectedly.
         return text # Fallback to original text on error
+
+from titlecase import titlecase
+
+# Define a callback function for custom word handling
+def custom_titlecase_callback(word, **kwargs):
+    # If the word is enclosed in parentheses, preserve the case inside.
+    if word.startswith('(') and word.endswith(')'):
+        return word
+
+    # Special NASA acronyms - always uppercase.
+    nasa_acronyms = ['nasa', 'sbir', 'sttr', 'iss', 'tdm', 'tdrs', 'fy', 'scan', 'epscor', 'stem']
+    if word.lower() in nasa_acronyms:
+        return word.upper()
+
+    # Special NASA acronyms - always uppercase.
+    business_acronyms = ['llc', 'inc', 'llp', 'ltd', 'l.l.c.', 'i.n.c.', 'l.l.p.', 'l.t.d.']
+    if word.lower() in business_acronyms:
+        return word.upper()
+
+    # Handle special cases.
+    if word.upper() == 'OSIRIS-REX':
+        return 'OSIRIS-REx'
+    if word.upper() == 'SCAN':
+        return 'SCaN'
+    if word.upper() == 'EPSCOR':
+        return 'EPSCoR'
+
+    # For small words that should be lowercase (like 'and', 'of', 'the', etc.).
+    small_words = ['and', 'of', 'for', 'the', 'a', 'an', 'in', 'on', 'at', 'to']
+    if word.lower() in small_words and not word.istitle():
+        return word.lower()
+
+    # Return None to let titlecase handle it normally.
+    return None
+
+def contracts_titlecase(text):
+    """Apply NASA-specific title casing rules to text"""
+    return titlecase(text, callback=custom_titlecase_callback)
