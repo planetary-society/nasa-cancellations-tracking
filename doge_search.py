@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 import sys
 from typing import List, Dict, Any, Optional, Tuple
-from abc import ABC, abstractmethod
 import time
 from usa_spending_api import USASpendingClient
 from contract_query import ContractQuery, FINAL_COLUMNS

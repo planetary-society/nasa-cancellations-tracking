@@ -10,7 +10,6 @@ from abc import ABC, abstractmethod
 FINAL_COLUMNS = [
     'Award ID',    # Unique identifier, either PIID or FAIN
     'source_type', # e.g., 'Contract', 'Grant'
-    'deleted date',# Relevant date (e.g., award date, deleted date)
     'recipient',   # Vendor name for contracts, Recipient for grants
     'value',       # Contract or Grant dollar value
     'savings',     # Reported savings value
