@@ -1,19 +1,25 @@
 from usa_spending_api import USASpendingClient, Award
 from doge_search import DOGEQuery
 from npdv_query import NPDVQuery
+from nasa_grants_query import NASAGrantsQuery
 import pandas as pd
 from datetime import datetime
 from typing import List, Dict
 import csv
+import logging
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class Search():
     def __init__(self):
         self.client = USASpendingClient()
-        self.sources = ["DOGE", "NPDV"]
+        self.sources = ["DOGE", "NPDV", "NASAGrants"]
         self.sources_cancellation_data: Dict[str,pd.DataFrame] = {} # key: source name, value: source dataframe
         self.unique_award_ids: List[str] = []
         self.unique_cancellations: Dict[str, List] = {} # key: award_id, value: List[award details]
         self.awards: List[Award] = []
+        self.ignore_award_ids: List[str] = ["80LARC25F7014","80JSC024F0024","80JSC024F0026","80LARC21F0053","80NSSC19K0714"]
 
     def search(self):
         
@@ -31,11 +37,25 @@ class Search():
         # Remove empty strings from the list
         self.unique_award_ids = [award_id for award_id in self.unique_award_ids if award_id]
 
+        # Remove award IDs that are in the ignore list
+        self.unique_award_ids = [award_id for award_id in self.unique_award_ids if award_id not in self.ignore_award_ids]
+
         # Query the USASpending API for all awards using the unique award IDs
         if self.unique_award_ids:
-            self.awards = self.client.all_award_search(self.unique_award_ids)
+            # Check if the number of unique award IDs exceeds the API limit of 100
+            # If it does, we need to split them into chunks of 100
+            # and make multiple API calls
+            if len(self.unique_award_ids) > USASpendingClient.RESULTS_LIMIT:
+                chunks = [self.unique_award_ids[i:i + USASpendingClient.RESULTS_LIMIT] for i in range(0, len(self.unique_award_ids), USASpendingClient.RESULTS_LIMIT)]
+                self.awards = []
+                for chunk in chunks:
+                    self.awards.extend(self.client.all_award_search(chunk))
+            else:
+                self.awards = self.client.all_award_search(self.unique_award_ids)
         else:
             self.awards = []
+        
+        print(f"Found {len(self.awards)} awards from USASpending API.")
         
         for source in self.sources:
             # Get the source award IDs from the source dataframe
@@ -57,9 +77,12 @@ class Search():
             "URL"
         ]
         
+        print(f"Found {len(self.unique_cancellations)} unique cancellations.")
+        
         output_data = list(self.unique_cancellations.values())
         
         df = pd.DataFrame(output_data, columns=headers)
+        df.sort_values(by=["Latest Modification Date", "Recipient"], inplace=True)
         
         csv_filename = f"nasa_cancellations_{datetime.now().strftime('%Y%m%d')}.csv"
         df.to_csv(csv_filename, index=False)
@@ -108,4 +131,8 @@ class Search():
                         (original_description or award.description),
                         award.usa_spending_url
                     ]
-        
+                    break
+
+if __name__ == "__main__":
+    search = Search()
+    search.search()
