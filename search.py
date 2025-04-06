@@ -5,7 +5,7 @@ from nasa_grants_query import NASAGrantsQuery
 import pandas as pd
 from datetime import datetime
 from typing import List, Dict
-import csv
+import os
 import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -86,8 +86,15 @@ class Search():
         df = pd.DataFrame(output_data, columns=headers)
         df.sort_values(by=["Latest Modification Date", "Recipient"], inplace=True)
         
-        csv_filename = f"nasa_cancellations_{datetime.now().strftime('%Y%m%d')}.csv"
+        # Make output directory if it doesn't exist
+        os.makedirs("consolidated", exist_ok=True)
+        
+        csv_filename = f"nasa_contract_cancellations_{datetime.now().strftime('%Y-%m-%d')}.csv"
+        
+        csv_filename = os.path.join("consolidated", csv_filename)
+        # Save the DataFrame to a CSV file
         df.to_csv(csv_filename, index=False)
+        
         print(f"CSV saved at {csv_filename}")
         
     def _add_source_awards(self, source_name: str, source_award_ids: List[str], awards: List[Award]):

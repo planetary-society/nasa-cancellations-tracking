@@ -139,9 +139,7 @@ class NASAGrantsQuery(ContractQuery):
             response.raise_for_status()
             response.encoding = 'utf-8'
             data = response.json()
-            if status == "Cancelled":
-                raw_df = pd.json_normalize(data, record_path=['hits','hits'])
-                raw_df.to_csv("nasa_grants_raw.csv", index=False)
+
         except requests.exceptions.RequestException as e:
             print(f"Error during NASA Grants API request: {e}", file=sys.stderr)
             return pd.DataFrame(columns=self.final_columns)
