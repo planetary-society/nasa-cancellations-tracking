@@ -17,10 +17,9 @@ class Location:
     """
     Represents a location (e.g., Place of Performance, Recipient Location).
 
-    Standardizes access to location details which might come from the nested
-    'place_of_performance' or 'recipient.location' objects in the lookup response
-    or from individual flat fields (like 'Place of Performance State Code')
-    in the search response.
+    Standardizes access to location details from either the nested object
+    returned by the /awards/{id} endpoint or the flat fields returned
+    by the /search/spending_by_award endpoint.
     """
     def __init__(self, data: Dict[str, Any]):
         """
@@ -28,79 +27,145 @@ class Location:
 
         Args:
             data: A dictionary containing location data, potentially from
-                  either the lookup or search API structure.
+                  either the lookup (/awards/) or search API structure.
         """
         self._data = data if isinstance(data, dict) else {}
 
     @property
+    def formatted_address(self) -> Optional[str]:
+        """Constructs a nicely-formatted address using available information."""
+        address = []
+        for item in [self.address_line1, self.address_line2, self.address_line3]:
+            if item:
+                address.append(item)
+        # Add city, state, and zip code
+        single_line = []
+        for item in [self.city, self.state_code, self.zip5]:
+            if item:
+                single_line.append(item)
+        if single_line:
+            address.append(", ".join(single_line))
+        # Add country
+        if self.country_name:
+            address.append(self.country_name)
+        # Join all parts with newlines
+        return "\n".join(address)
+
+    @property
+    def district(self) -> Optional[str]:
+        """Returns the state code and congressional district."""
+        # Awards key: 'state_code' and 'congressional_code'
+        # Search: Not typically available for PoP
+        output = []
+        if self.state_code:
+            output.append(self.state_code)
+        if self.congressional_code:
+            output.append(self.congressional_code)
+        if output:
+            return "-".join(output)
+
+    @property
+    def address_line1(self) -> Optional[str]:
+        """Returns address line 1."""
+        # Awards key: 'address_line1'
+        # Search: Not typically available for PoP
+        return self._data.get("address_line1")
+
+    @property
+    def address_line2(self) -> Optional[str]:
+        """Returns address line 2."""
+        # Awards key: 'address_line2'
+        return self._data.get("address_line2")
+
+    @property
+    def address_line3(self) -> Optional[str]:
+        """Returns address line 3."""
+        # Awards key: 'address_line3'
+        return self._data.get("address_line3")
+
+    @property
     def city(self) -> Optional[str]:
-        """Returns the city name (primarily available from lookup)."""
-        # Lookup key: 'city_name'
-        # Search results generally don't include city name directly.
+        """Returns the city name."""
+        # Awards key: 'city_name'
+        # Search: Not typically available for PoP
         return self._data.get("city_name")
 
     @property
     def state_code(self) -> Optional[str]:
-        """Returns the state code (e.g., 'CA')."""
-        # Lookup key: 'state_code'
+        """Returns the 2-letter state code (e.g., 'CA')."""
+        # Awards key: 'state_code'
         # Search key: 'Place of Performance State Code'
         return self._data.get("state_code") or self._data.get("Place of Performance State Code")
 
     @property
-    def state(self) -> Optional[str]:
-        """Returns the full state name (primarily available from lookup)."""
-        # Lookup key: 'state_name'
+    def state_name(self) -> Optional[str]:
+        """Returns the full state name."""
+        # Awards key: 'state_name'
         return self._data.get("state_name")
 
     @property
     def country_code(self) -> Optional[str]:
         """Returns the 3-letter country code (e.g., 'USA')."""
-        # Lookup key: 'location_country_code'
+        # Awards key: 'location_country_code'
         # Search key: 'Place of Performance Country Code'
         return self._data.get("location_country_code") or self._data.get("Place of Performance Country Code")
 
     @property
     def country_name(self) -> Optional[str]:
-        """Returns the full country name (primarily available from lookup)."""
-        # Lookup key: 'country_name'
+        """Returns the full country name."""
+        # Awards key: 'country_name'
         return self._data.get("country_name")
 
     @property
     def zip5(self) -> Optional[str]:
         """Returns the 5-digit ZIP code."""
-        # Lookup key: 'zip5'
+        # Awards key: 'zip5'
         # Search key: 'Place of Performance Zip5'
         zip_val = self._data.get("zip5") or self._data.get("Place of Performance Zip5")
-        # Ensure it's returned as a string if not None
         return str(zip_val) if zip_val is not None else None
 
     @property
+    def zip4(self) -> Optional[str]:
+        """Returns the 4-digit ZIP+4 code."""
+        # Awards key: 'zip4'
+        return self._data.get("zip4")
+
+    @property
     def county_name(self) -> Optional[str]:
-        """Returns the county name (primarily available from lookup)."""
-        # Lookup key: 'county_name'
+        """Returns the county name."""
+        # Awards key: 'county_name'
         return self._data.get("county_name")
 
     @property
     def county_code(self) -> Optional[str]:
-        """Returns the county code (primarily available from lookup)."""
-        # Lookup key: 'county_code'
+        """Returns the county code."""
+        # Awards key: 'county_code'
         return self._data.get("county_code")
 
     @property
-    def address_line1(self) -> Optional[str]:
-        """Returns address line 1 (primarily available from lookup)."""
-        # Lookup key: 'address_line1'
-        return self._data.get("address_line1")
+    def congressional_code(self) -> Optional[str]:
+        """Returns the congressional district code."""
+        # Awards key: 'congressional_code'
+        return self._data.get("congressional_code")
 
-    # Add other location fields as needed (address_line2, zip4, congressional_code etc.)
-    # by adding more properties accessing self._data.get(...)
+    @property
+    def foreign_province(self) -> Optional[str]:
+        """Returns the foreign province."""
+        # Awards key: 'foreign_province'
+        return self._data.get("foreign_province")
+
+    @property
+    def foreign_postal_code(self) -> Optional[str]:
+        """Returns the foreign postal code."""
+        # Awards key: 'foreign_postal_code'
+        return self._data.get("foreign_postal_code")
 
     def __repr__(self) -> str:
         """Provides a concise string representation of the location."""
-        city = self.city_name or "?"
-        state = self.state_code or "?"
-        country = self.country_code or "?"
-        return f"<Location city={city}, state={state}, country={country}>"
+        city_val = self.city or "?"
+        state_val = self.state_code or "?"
+        country_val = self.country_code or "?"
+        return f"<Location city='{city_val}', state='{state_val}', country='{country_val}'>"
 
     @property
     def raw_data(self) -> Dict[str, Any]:
@@ -365,12 +430,12 @@ class Transaction:
 
 class Award:
     """
-    Represents a USAspending award, standardizing access to data and providing
-    lazy-loading for related transactions.
+    Represents a USAspending award, standardizing access to data.
 
-    Access standardized fields via properties (e.g., award.description, award.recipient.name).
-    Access transactions via award.transactions (fetches on first access).
-    Access raw underlying data via award.raw_data or award.get('Original Field Name').
+    Handles data from both /search/spending_by_award and /awards/{id} endpoints.
+    Lazy-loads detailed Place of Performance and Recipient data from the
+    /awards/{id} endpoint when those properties are accessed if not already present.
+    Lazy-loads transactions via the .transactions property.
     """
     def __init__(self, data: Dict[str, Any], client: Optional['USASpendingClient'] = None):
         """
@@ -378,19 +443,82 @@ class Award:
 
         Args:
             data: A dictionary containing the award data from the API JSON response.
-            client: An instance of USASpendingClient, required for lazy-loading related data.
+            client: An instance of USASpendingClient, required for lazy-loading.
         """
-        self._data = data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            raise ValueError("Award data must be a dictionary.")
+        self._data = data
         self._client = client # Store reference to client for lazy loading
 
-        # Cache for lazy-loaded transactions
+        # --- Caches and State for Lazy Loading ---
+        # For transactions
         self._transactions: Optional[List[Transaction]] = None
+        # For detailed PoP/Recipient from /awards/{id} lookup
+        self._detailed_data_attempted: bool = False
+        self._fetched_pop_location: Optional[Location] = None
+        self._fetched_recipient: Optional[Recipient] = None
 
-        # Pre-fetch potential nested objects from lookup response for efficiency
-        self._pop_data = self._data.get('place_of_performance')
-        self._recipient_data = self._data.get('recipient')
-        self._perf_period_data = self._data.get('period_of_performance')
-        
+        # Check if the initial data looks like it came from the /awards/ endpoint
+        # If so, we can mark detailed data as "attempted" and potentially pre-populate caches
+        if 'place_of_performance' in self._data and isinstance(self._data['place_of_performance'], dict):
+            self._fetched_pop_location = Location(self._data['place_of_performance'])
+            self._detailed_data_attempted = True # Mark as attempted as we have the structure
+        if 'recipient' in self._data and isinstance(self._data['recipient'], dict):
+            self._fetched_recipient = Recipient(self._data['recipient'])
+            self._detailed_data_attempted = True # Mark as attempted
+
+
+    def _fetch_and_cache_detailed_data(self) -> None:
+        """
+        Internal method to fetch detailed award data from the /awards/{id} endpoint
+        and cache the Place of Performance and Recipient objects.
+        This is triggered by accessing .place_of_performance or .recipient
+        if the detailed data hasn't been fetched or attempted yet.
+        """
+        # Only run once
+        if self._detailed_data_attempted:
+            return
+
+        self._detailed_data_attempted = True # Mark that we tried
+
+        if not self._client:
+            print("Warning: Cannot fetch detailed award data. Award object lacks a client instance.")
+            return
+
+        award_id_to_use = self.generated_unique_award_id
+        if not award_id_to_use:
+            # Fallback if generated_unique_award_id is missing (e.g., from search results)
+            # The /awards/ endpoint needs the generated ID, so we cannot proceed.
+            print(f"Warning: Cannot fetch detailed award data. Missing 'generated_unique_award_id' for Prime Award ID {self.prime_award_id}.")
+            return
+
+        print(f"Lazy-loading detailed data for Award ID: {award_id_to_use}...")
+
+        # Use the client to fetch data (or directly use requests if no client method)
+        # detailed_json_data = self._client._make_request(f"{AWARD_LOOKUP_BASE_URL}{award_id_to_use}/")
+        detailed_json_data = self._client.get_raw_award_details(award_id_to_use)
+
+
+        if detailed_json_data and isinstance(detailed_json_data, dict):
+            # Extract and cache Place of Performance if present
+            pop_data = detailed_json_data.get('place_of_performance')
+            if isinstance(pop_data, dict):
+                self._fetched_pop_location = Location(pop_data)
+            else:
+                print(f"  Detailed data fetched for {award_id_to_use}, but 'place_of_performance' object is missing or not a dict.")
+
+
+            # Extract and cache Recipient if present
+            rec_data = detailed_json_data.get('recipient')
+            if isinstance(rec_data, dict):
+                 self._fetched_recipient = Recipient(rec_data)
+            else:
+                 print(f"  Detailed data fetched for {award_id_to_use}, but 'recipient' object is missing or not a dict.")
+
+        else:
+            print(f"  Failed to fetch or parse detailed data for {award_id_to_use}.")
+            # Keep cached values as None
+            
     # --- Standardized Properties ---
 
     @property
@@ -473,9 +601,13 @@ class Award:
         Returns the period of performance details as a PeriodOfPerformance object.
         Constructs data from lookup ('period_of_performance' object) or search fields.
         """
-        if self._perf_period_data and isinstance(self._perf_period_data, dict):
+        # Directly check the main data dictionary for the nested object
+        perf_period_data = self._data.get('period_of_performance')
+        if perf_period_data and isinstance(perf_period_data, dict):
             # Data from lookup endpoint (nested object)
-            return PeriodOfPerformance(self._perf_period_data)
+            return PeriodOfPerformance(perf_period_data)
+
+        # Fallback: Check for flat fields from search results
         elif self._data.get("Start Date") or self._data.get("End Date") or self._data.get("Period of Performance Start Date"):
             # Data potentially from search endpoint (flat fields)
             search_perf_data = {
@@ -486,6 +618,7 @@ class Award:
             # Only return object if we found some relevant date info
             if any(v is not None for v in search_perf_data.values()):
                  return PeriodOfPerformance(search_perf_data)
+
         # Return None if no relevant data found from either source
         return None
 
@@ -493,48 +626,84 @@ class Award:
     def place_of_performance(self) -> Optional[Location]:
         """
         Returns the primary place of performance details as a Location object.
-        Constructs data from lookup ('place_of_performance' object) or search fields.
-        Note: Lookup provides more detailed location info than search.
+
+        If the Award was initialized with data from the /awards/{id} endpoint,
+        it uses that nested object directly. Otherwise, if accessed, it attempts
+        to lazy-load the detailed data from /awards/{id}. If lazy-loading fails
+        or isn't possible, it falls back to constructing location info from
+        flat fields available in /search/ results.
         """
-        if self._pop_data and isinstance(self._pop_data, dict):
-             # Data from lookup endpoint (nested object)
-             return Location(self._pop_data)
-        elif self._data.get("Place of Performance State Code") or self._data.get("Place of Performance Country Code"):
-             # Data potentially from search endpoint (flat fields - less detail)
+        # 1. Check if we already have the detailed PoP from initial data or successful fetch
+        if self._fetched_pop_location is not None:
+            return self._fetched_pop_location
+
+        # 2. Check if we already tried fetching (and it failed or PoP was missing)
+        if self._detailed_data_attempted:
+            # Fetch attempted, but _fetched_pop_location is None, so fallback
+            pass # Proceed to fallback logic below
+        else:
+            # 3. Attempt lazy-load fetch
+            self._fetch_and_cache_detailed_data()
+            # Check cache again after attempt
+            if self._fetched_pop_location is not None:
+                return self._fetched_pop_location
+
+        # 4. Fallback: Try constructing from flat search fields in self._data
+        # (Only run if steps 1-3 didn't return a detailed location)
+        if self._data.get("Place of Performance State Code") or self._data.get("Place of Performance Country Code"):
              search_loc_data = {
                  "state_code": self._data.get("Place of Performance State Code"),
                  "country_code": self._data.get("Place of Performance Country Code"),
                  "zip5": self._data.get("Place of Performance Zip5"),
                  # Search results lack city name, county, address etc. for PoP
              }
-             # Only return object if we found some relevant location info
              if any(v is not None for v in search_loc_data.values()):
+                 # Instantiate with the limited search data
                  return Location(search_loc_data)
-        # Return None if no relevant data found from either source
+
+        # 5. Return None if no data found from any source
         return None
 
     @property
     def recipient(self) -> Optional[Recipient]:
         """
         Returns the recipient details as a Recipient object.
-        Constructs data from lookup ('recipient' object) or search fields.
-        Note: Lookup provides more detailed recipient info (parent, location, categories).
+
+        If the Award was initialized with data from the /awards/{id} endpoint,
+        it uses that nested object directly. Otherwise, if accessed, it attempts
+        to lazy-load the detailed data from /awards/{id}. If lazy-loading fails
+        or isn't possible, it falls back to constructing recipient info from
+        flat fields available in /search/ results.
         """
-        if self._recipient_data and isinstance(self._recipient_data, dict):
-             # Data from lookup endpoint (nested object)
-             return Recipient(self._recipient_data)
-        elif self._data.get("Recipient Name") or self._data.get("Recipient DUNS Number"):
-             # Data potentially from search endpoint (flat fields)
+        # 1. Check if we already have the detailed Recipient from initial data or successful fetch
+        if self._fetched_recipient is not None:
+            return self._fetched_recipient
+
+        # 2. Check if we already tried fetching (and it failed or recipient was missing)
+        if self._detailed_data_attempted:
+            # Fetch attempted, but _fetched_recipient is None, so fallback
+            pass # Proceed to fallback logic below
+        else:
+            # 3. Attempt lazy-load fetch
+            self._fetch_and_cache_detailed_data()
+             # Check cache again after attempt
+            if self._fetched_recipient is not None:
+                return self._fetched_recipient
+
+        # 4. Fallback: Try constructing from flat search fields in self._data
+        # (Only run if steps 1-3 didn't return a detailed recipient)
+        if self._data.get("Recipient Name") or self._data.get("Recipient DUNS Number"):
              search_recip_data = {
                  "recipient_name": self._data.get("Recipient Name"),
                  "recipient_unique_id": self._data.get("Recipient DUNS Number"), # Mapping DUNS
                  "recipient_id": self._data.get("recipient_id"), # Hash + level
                  # Search results lack parent info, business categories, recipient location etc.
              }
-             # Only return object if we found some relevant recipient info
              if any(v is not None for v in search_recip_data.values()):
+                  # Instantiate with the limited search data
                  return Recipient(search_recip_data)
-        # Return None if no relevant data found from either source
+
+        # 5. Return None if no data found from any source
         return None
 
     @property
@@ -798,6 +967,36 @@ class USASpendingClient:
             # Catch any other unexpected errors during the request
             print(f"An unexpected error occurred during API request ({caller_info}): {e}")
             return None
+
+    def get_raw_award_details(self, usa_spending_award_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches raw JSON award details for a specific USAspending award ID.
+        This is primarily intended as a helper for lazy-loading within the Award class.
+
+        Args:
+            usa_spending_award_id: The unique award identifier (e.g., generated_unique_award_id).
+
+        Returns:
+            The parsed JSON dictionary containing the raw award data,
+            or None if an error occurs.
+        """
+        if not usa_spending_award_id:
+            print("Error: get_raw_award_details requires a usa_spending_award_id.")
+            return None
+        # Construct the specific endpoint URL for the lookup
+        endpoint = f"{self.award_lookup_base_url}{usa_spending_award_id}/"
+        caller_info = f"get_raw_award_details(id={usa_spending_award_id})"
+
+        # Call the central helper method using GET
+        # It already handles errors, timeouts, JSON decoding, etc.
+        data = self._make_api_request(
+            method="GET",
+            url=endpoint,
+            caller_info=caller_info
+            # No params or payload needed for this GET request
+        )
+        # The _make_api_request method returns the dictionary or None on error
+        return data
 
     # --- Refactored Public Methods ---
 
