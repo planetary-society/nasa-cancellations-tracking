@@ -162,8 +162,8 @@ def parse_mod_number(contract_mod_str: Optional[str]) -> Tuple[str, int]:
         - "AWARD_ID Modification P001"
         - "AWARD_ID Modification S022"
         - "AWARD_ID Modification A00002"
-        - "AWARD_ID Modification 215"         <- New
-        - "AWARD_ID Modification 0 (Base Record)" <- New
+        - "AWARD_ID Modification 215"
+        - "AWARD_ID Modification 0 (Base Record)"
         - "AWARD_ID" (no modification)
 
     Args:

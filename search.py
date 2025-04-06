@@ -65,6 +65,7 @@ class Search():
         
         headers = [
             "Source",
+            "District",
             "Recipient",
             "Award ID",
             "Latest Modification Number",
@@ -74,6 +75,7 @@ class Search():
             "Award Amount",
             "Total Outlays",
             "Description",
+            "Business Categories",
             "URL"
         ]
         
@@ -120,6 +122,7 @@ class Search():
                     
                     self.unique_cancellations[award_id] = [
                         source_name,
+                        award.recipient.location.district,
                         award.recipient.name,
                         award_id,
                         award.transactions[0].modification_number if award.transactions else "",
@@ -129,6 +132,7 @@ class Search():
                         award.potential_value,
                         award.total_outlay,
                         (original_description or award.description),
+                        ", ".join(award.recipient.business_categories),
                         award.usa_spending_url
                     ]
                     break
