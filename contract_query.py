@@ -2,6 +2,8 @@
 
 import pandas as pd
 import sys
+import os
+from datetime import date
 from typing import List
 from abc import ABC, abstractmethod
 
@@ -38,6 +40,25 @@ class ContractQuery(ABC):
         """
         self.final_columns = final_columns
         print("Base ContractQuery initialized.", file=sys.stderr)
+
+    def export_to_csv(self, data: pd.DataFrame, filename_base: str):
+        """
+        Exports the provided DataFrame to a CSV file to the data directory.
+        appends the current date to the filename.
+
+        Args:
+            data: The DataFrame to export.
+            filename: The name of the output CSV file.
+        """
+        # Ensure the data directory exists
+        os.makedirs("data", exist_ok=True)
+        
+        # Construct the full file path
+        filename_base = os.path.join("data", filename_base)
+        filename = filename_base + "_" + date.today().strftime("%Y-%m-%d") + ".csv"
+        
+        data.to_csv(filename, index=False)
+        print(f"Data exported to {filename}", file=sys.stderr)
 
     @abstractmethod
     def search(self, **kwargs) -> pd.DataFrame:

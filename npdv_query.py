@@ -273,6 +273,9 @@ class NPDVQuery(ContractQuery):
                 # Reindex to ensure exact column order and presence
                 final_df = final_df.reindex(columns=self.final_columns)
                 logging.info(f"Created final DataFrame with {len(final_df)} terminated contracts based on latest modification.")
+                if not final_df.empty:
+                    self.export_to_csv(final_df, "npdv_potential_cancellations")
+                
                 return final_df
             except Exception as e:
                  logging.error(f"Failed to create final DataFrame from results: {e}", exc_info=True)

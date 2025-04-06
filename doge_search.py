@@ -162,7 +162,7 @@ class DOGEQuery(ContractQuery):
                 "savings": item.get("savings"),
                 "status": item.get("fpds_status", ""),
                 "source_url": item.get("fpds_link"),
-                "description": "DOGE Cancellation Date: " + item.get("deleted_date") + ". " + smart_sentence_case(item.get("description")),
+                "description": "DOGE Cancellation Date: " + item.get("deleted_date") + ". " + smart_sentence_case(item.get("description").replace("\n", " ")),
                 "agency": agency_name
             }
         elif item_type == "Grant":
@@ -183,7 +183,7 @@ class DOGEQuery(ContractQuery):
                 "savings": item.get("savings"),
                 "status": "",
                 "source_url": item.get("link"),
-                "description": "DOGE Cancellation Date: " + item.get("date") + ". " + smart_sentence_case(item.get("description")),
+                "description": "DOGE Cancellation Date: " + item.get("date") + ". " + smart_sentence_case(item.get("description").replace("\n", " ")),
                 "agency": agency_name
             }
             time.sleep(0.1) # Optional delay to avoid overwhelming the API
@@ -329,6 +329,10 @@ class DOGEQuery(ContractQuery):
         else:
             self._log("\nNo NASA contracts or grants were found in the DoGE datasets.")
             # final_df is already an empty DF with correct columns
+
+        # Save the final DataFrame to CSV
+        if not final_df.empty:
+            self.export_to_csv(final_df, "doge_contracts_and_grants_query")
 
         return final_df
 
