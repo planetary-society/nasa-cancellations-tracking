@@ -1,0 +1,56 @@
+name: Daily Search and Commit
+
+on:
+  schedule:
+    # Runs at 15:00 UTC daily, which corresponds to:
+    # - 7:00 AM PDT (Pacific Daylight Time, UTC-7)
+    # - 8:00 AM PST (Pacific Standard Time, UTC-8)
+    # Adjust the hour if you prefer 7am PST / 6am PDT (use '14' instead of '15').
+    - cron: '0 15 * * *'
+  workflow_dispatch: # Allows manual triggering from the Actions tab
+
+jobs:
+  run_search:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to checkout the code
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4 # Use the latest major version
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10' # Specify your desired Python version
+          cache: 'pip' # Cache dependencies for faster builds
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Ensure you have a requirements.txt file listing pandas, requests, etc.
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "requirements.txt not found. Please create one."
+            # You might need to install libraries directly if no requirements.txt exists
+            # pip install pandas requests
+            # Add any other libraries your search script or query classes need
+          fi
+        # Add error handling for missing requirements.txt if desired
+
+      - name: Run the Search Script
+        run: |
+
+          python search.py
+
+      - name: Commit and Push Changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Automated daily update: $(date +'%Y-%m-%d')"
+
+          file_pattern: "data/*.csv consolidated/*.csv"
+
+          commit_user_name: GitHub Actions Bot
+          commit_user_email: github-actions-bot@users.noreply.github.com
+          commit_author: GitHub Actions Bot <github-actions-bot@users.noreply.github.com>
