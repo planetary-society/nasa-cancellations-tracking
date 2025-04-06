@@ -5,6 +5,10 @@ __pycache__/
 
 .DS_Store
 
+# Ignore downloaded NPDV data files
+nasa_contracts_2025.csv
+nasa_contracts_2025.csv
+
 # C extensions
 *.so
 
