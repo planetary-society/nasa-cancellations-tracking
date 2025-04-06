@@ -2,16 +2,14 @@
 
 import pandas as pd
 import requests
-import io
 import logging
 import re
-import sys
 import os
 import csv # Import csv module
 from urllib.parse import urlparse
 from typing import List, Tuple, Dict, Any, Optional
 from datetime import datetime
-
+from utils import parse_mod_number # Import parse_mod_number function from utils.py
 
 # Assuming contract_query.py contains the base class and FINAL_COLUMNS
 try:
@@ -19,7 +17,7 @@ try:
 except ImportError:
     logging.error("Failed to import ContractQuery base class. Ensure contract_query.py exists.")
     # Define dummy base class and columns if import fails, for basic structure
-    FINAL_COLUMNS = ['Award ID', 'source_type', 'deleted date', 'recipient', 'value', 'savings', 'status', 'source_url', 'description', 'agency']
+    FINAL_COLUMNS = ['Award ID', 'source_type', 'recipient', 'value', 'savings', 'status', 'source_url', 'description', 'agency']
     class ContractQuery: # Dummy class
         def __init__(self, final_columns): self.final_columns = final_columns
         def search(self, **kwargs): raise NotImplementedError
@@ -107,92 +105,6 @@ class NPDVQuery(ContractQuery):
             # Log a warning if parsing fails
             logging.warning(f"Could not parse date string '{date_str}' using format '{input_format}'. Returning empty string. Error: {e}")
             return "" # Return empty string on failure
-
-    @staticmethod
-    def parse_mod_number(contract_mod_str: Optional[str]) -> Tuple[str, int]:
-        """
-        Parses a string potentially containing an award ID and a modification identifier.
-
-        Handles formats like:
-            - "AWARD_ID Modification P001"
-            - "AWARD_ID Modification S022"
-            - "AWARD_ID Modification A00002"
-            - "AWARD_ID Modification 215"         <- New
-            - "AWARD_ID Modification 0 (Base Record)" <- New
-            - "AWARD_ID" (no modification)
-
-        Args:
-            contract_mod_str: The input string to parse.
-
-        Returns:
-            A tuple containing:
-            - The extracted award ID (string). Returns the original string if no
-              " Modification " part is found. Returns empty string if input is None/empty.
-            - The extracted modification number (int). Returns 0 if no modification
-              part is found, if the modification part doesn't contain digits that can be
-              parsed according to the rules, or if the input is None/empty.
-        """
-        # 1. Handle None or empty input
-        if not contract_mod_str:
-            return "", 0
-
-        # Ensure input is treated as string and strip whitespace
-        contract_mod_str = str(contract_mod_str).strip()
-        if not contract_mod_str: # Check again after potential stripping of whitespace-only string
-            return "", 0
-
-        # 2. Split by " Modification " case-insensitively
-        parts = re.split(r'\s+Modification\s+', contract_mod_str, maxsplit=1, flags=re.IGNORECASE)
-
-        # 3. If no " Modification " part, return the whole string as ID and mod 0
-        if len(parts) < 2:
-            return contract_mod_str, 0
-
-        # 4. Extract award ID and the full modification part
-        award_id = parts[0].strip()
-        mod_part_full = parts[1].strip()
-
-        # Handle case where the part after "Modification" is empty
-        if not mod_part_full:
-             logging.warning(f"Found ' Modification ' but no text after it in '{contract_mod_str}'. Defaulting mod to 0.")
-             return award_id, 0
-
-        # 5. Attempt to extract modification number (int)
-        mod_num = 0
-        mod_num_found = False
-
-        # --- Revised Logic ---
-        # First, try to match leading digits directly (handles "215", "0 (Base Record)")
-        match_leading_digits = re.match(r'^(\d+)', mod_part_full)
-        if match_leading_digits:
-            mod_str = match_leading_digits.group(1)
-            try:
-                mod_num = int(mod_str)
-                mod_num_found = True
-            except (ValueError, TypeError):
-                 # Should be unlikely if regex matched \d+, but handle anyway
-                 logging.warning(f"Failed converting leading digits '{mod_str}' from '{mod_part_full}' in '{contract_mod_str}'.")
-                 # Continue to next check
-
-        # If leading digits weren't found or failed conversion,
-        # try stripping leading non-digits (handles "P001", "S022", "A00002")
-        if not mod_num_found:
-            mod_part_numeric = re.sub(r'^\D+', '', mod_part_full) # Remove leading non-digits
-            if mod_part_numeric: # Check if anything numeric remains
-                try:
-                    mod_num = int(mod_part_numeric)
-                    mod_num_found = True
-                except (ValueError, TypeError):
-                    logging.warning(f"Failed converting digits '{mod_part_numeric}' (after stripping non-digits) from '{mod_part_full}' in '{contract_mod_str}'.")
-                    # Mod num remains 0
-
-        # If no number was found by either method, log a warning
-        if not mod_num_found:
-             logging.warning(f"Could not extract numeric modification from '{mod_part_full}' in '{contract_mod_str}'. Defaulting mod to 0.")
-             # mod_num is already 0
-
-        # 6. Return the extracted award ID and modification number
-        return award_id, mod_num
 
     def _download_file(self, filepath: str) -> bool:
         """Downloads the file from self.csv_url to the specified filepath. (Implementation unchanged)"""
@@ -285,7 +197,7 @@ class NPDVQuery(ContractQuery):
                     row_count += 1
                     try:
                         contract_mod_str = row.get('Contract/Mod Number', '')
-                        award_id, mod_num = self.parse_mod_number(contract_mod_str)
+                        award_id, mod_num = parse_mod_number(contract_mod_str)
 
                         if not award_id: # Skip if award ID couldn't be parsed
                             continue
