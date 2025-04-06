@@ -33,7 +33,7 @@ class Location:
         self._data = data if isinstance(data, dict) else {}
 
     @property
-    def city_name(self) -> Optional[str]:
+    def city(self) -> Optional[str]:
         """Returns the city name (primarily available from lookup)."""
         # Lookup key: 'city_name'
         # Search results generally don't include city name directly.
@@ -47,7 +47,7 @@ class Location:
         return self._data.get("state_code") or self._data.get("Place of Performance State Code")
 
     @property
-    def state_name(self) -> Optional[str]:
+    def state(self) -> Optional[str]:
         """Returns the full state name (primarily available from lookup)."""
         # Lookup key: 'state_name'
         return self._data.get("state_name")
@@ -650,6 +650,10 @@ class USASpendingClient:
     transaction data (/transactions/). It uses a central helper method
     for making API requests and handling common errors.
     """
+    # API Results Limit per request   
+    RESULTS_LIMIT = 100
+
+    
     # --- Award Type Code Constants (Grouped by API constraints) ---
     # These lists define valid groups of award_type_codes for API filtering.
     # The API generally requires filtering by only one group per search request.
