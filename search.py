@@ -19,7 +19,7 @@ class Search():
         self.unique_award_ids: List[str] = []
         self.unique_cancellations: Dict[str, List] = {} # key: award_id, value: List[award details]
         self.awards: List[Award] = []
-        self.ignore_award_ids: List[str] = ["80LARC25F7014","80JSC024F0024","80JSC024F0026","80LARC21F0053","80NSSC19K0714"]
+        self.ignore_award_ids: List[str] = ["80LARC19F0086","80LARC25F7014","80JSC024F0024","80JSC024F0026","80LARC21F0053","80NSSC19K0714"]
 
     def search(self):
         
