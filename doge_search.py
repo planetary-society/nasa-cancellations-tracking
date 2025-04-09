@@ -9,7 +9,7 @@ from contract_query import ContractQuery, FINAL_COLUMNS
 import datetime
 from urllib.parse import urlparse, parse_qs
 import csv
-from utils import smart_sentence_case, contracts_titlecase
+from utils import smart_sentence_case, contracts_titlecase, format_as_currency
 
 # Default DoGE API settings
 DOGE_CONTRACTS_ENDPOINT = "https://api.doge.gov/savings/contracts"
@@ -152,7 +152,11 @@ class DOGEQuery(ContractQuery):
         if item_type == "Contract":
             # Extract Award ID specifically for contracts from fpds_link
             award_id = self._extract_award_id_from_contract_url(item.get("fpds_link"))
-
+            savings = item.get("savings", "")
+            if savings:
+                savings = format_as_currency(savings)
+            else:
+                savings = "$0"
             standardized = {
                 "Award ID": award_id,
                 "source_type": "Contract",
@@ -162,7 +166,7 @@ class DOGEQuery(ContractQuery):
                 "savings": item.get("savings"),
                 "status": item.get("fpds_status", ""),
                 "source_url": item.get("fpds_link"),
-                "description": "DOGE Cancellation Date: " + item.get("deleted_date") + ". " + smart_sentence_case(item.get("description").replace("\n", " ")),
+                "description": "Status: " + item.get("fpds_status", "") + ". Reported savings: " + savings + ". DOGE Action Date: " + item.get("deleted_date") + ". " + smart_sentence_case(item.get("description").replace("\n", " ")),
                 "agency": agency_name
             }
         elif item_type == "Grant":
@@ -173,7 +177,11 @@ class DOGEQuery(ContractQuery):
                 award_id = self._extract_usa_spending_award_id_from_grant_url(url)
             else:
                 award_id = ""
-
+            savings = item.get("savings", "")
+            if savings:
+                savings = format_as_currency(savings)
+            else:
+                savings = "$0"
             standardized = {
                 "Award ID": award_id,
                 "source_type": "Grant",
@@ -183,7 +191,7 @@ class DOGEQuery(ContractQuery):
                 "savings": item.get("savings"),
                 "status": "",
                 "source_url": item.get("link"),
-                "description": "DOGE Cancellation Date: " + item.get("date") + ". " + smart_sentence_case(item.get("description").replace("\n", " ")),
+                "description": "DOGE Action Date: " + item.get("date") + ". Reported savings: " + savings + ". " + smart_sentence_case(item.get("description").replace("\n", " ")),
                 "agency": agency_name
             }
             time.sleep(0.1) # Optional delay to avoid overwhelming the API

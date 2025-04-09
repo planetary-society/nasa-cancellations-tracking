@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal
 import logging
 from typing import Set, Optional, Tuple
 from titlecase import titlecase
@@ -237,3 +238,21 @@ def parse_mod_number(contract_mod_str: Optional[str]) -> Tuple[str, int]:
 
     # 6. Return the extracted award ID and modification number
     return award_id, mod_num
+
+def format_as_currency(amount: int) -> str:
+    """
+    Convert an integer to a nicely formatted US currency string.
+    
+    Args:
+        amount (int): The amount to format
+        
+    Returns:
+        str: Formatted currency string with $ symbol and commas
+    """
+    # Round to nearest dollar
+    rounded_amount = round(amount)
+    
+    # Format with commas and add dollar sign
+    formatted_string = "${:,}".format(rounded_amount)
+    
+    return formatted_string
