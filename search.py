@@ -84,7 +84,7 @@ class Search():
         output_data = list(self.unique_cancellations.values())
         
         df = pd.DataFrame(output_data, columns=headers)
-        df.sort_values(by=["Latest Modification Date", "Recipient"], inplace=True)
+        df.sort_values(by=["Recipient", "Latest Modification Date"], inplace=True)
         
         # Make output directory if it doesn't exist
         os.makedirs("consolidated", exist_ok=True)
