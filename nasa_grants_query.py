@@ -52,7 +52,7 @@ class NASAGrantsQuery(ContractQuery):
         )
         # Remove entries unless they have "change pop end date" or "terminated" in the status
         date_changes = date_changes[
-            date_changes['status'].str.contains("change pop end date|terminat|convenience", case=False, na=False)
+            date_changes['status'].str.contains("change pop end date|terminat|convenience|effectuate", case=False, na=False)
         ]
         # Now filter out only the rows with "decrease" in the status
         date_changes = date_changes[

@@ -35,7 +35,7 @@ class NPDVQuery(ContractQuery):
     Identifies potentially terminated/stopped contracts based on keywords found
     *only in the latest modification* for each unique Award ID, using csv.DictReader.
     """
-    DEFAULT_SEARCH_PHRASES = ["termination", "stop work", "terminated", "terminates", "effectuated"]
+    DEFAULT_SEARCH_PHRASES = ["termination", "stop work", "terminated", "terminates", "effectuate"]
     DEFAULT_CSV_URL = "https://raw.githubusercontent.com/planetary-society/nasa-contracts/master/data/nasa_contracts_2025.csv"
     AGENCY_NAME = "National Aeronautics and Space Administration"
 
