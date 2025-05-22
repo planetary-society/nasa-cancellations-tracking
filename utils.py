@@ -148,11 +148,14 @@ def custom_titlecase_callback(word, **kwargs):
     if word.lower() in small_words and not word.istitle():
         return word.lower()
 
-    # Return None to let titlecase handle it normally.
-    return None
+    # If no other rule matched, let titlecase apply its default,
+    # or, to be more forceful for simple words, apply basic title()
+    return word.title() if word else word
 
 def contracts_titlecase(text):
     """Apply NASA-specific title casing rules to text"""
+    if not text:
+        return ""
     return titlecase(text, callback=custom_titlecase_callback)
 
 def parse_mod_number(contract_mod_str: Optional[str]) -> Tuple[str, int]:
@@ -187,23 +190,25 @@ def parse_mod_number(contract_mod_str: Optional[str]) -> Tuple[str, int]:
     if not contract_mod_str: # Check again after potential stripping of whitespace-only string
         return "", 0
 
-    # 2. Split by " Modification " case-insensitively
-    parts = re.split(r'\s+Modification\s+', contract_mod_str, maxsplit=1, flags=re.IGNORECASE)
+    # 2. Split by " Modification" followed by (space or end of string)
+    # This correctly handles "AWARD_ID Modification", "AWARD_ID Modification ", and "AWARD_ID Modification P001"
+    parts = re.split(r'\s+Modification(?:\s+|$)', contract_mod_str, maxsplit=1, flags=re.IGNORECASE)
 
-    # 3. If no " Modification " part, return the whole string as ID and mod 0
+    # 3. If no " Modification" part that matches criteria, parts[0] is original string.
     if len(parts) < 2:
+        # This case implies "Modification" was not found in a way that allows splitting off an award ID.
+        # e.g. input is just "AWARD_ID" or "SomeText"
         return contract_mod_str, 0
-
-    # 4. Extract award ID and the full modification part
+    
     award_id = parts[0].strip()
-    mod_part_full = parts[1].strip()
+    mod_part_full = parts[1].strip() # This will be "" if "Modification" was at the end
 
-    # Handle case where the part after "Modification" is empty
+    # Handle case where the part after "Modification" is empty (already handled by mod_part_full = "" from split)
     if not mod_part_full:
-            logging.warning(f"Found ' Modification ' but no text after it in '{contract_mod_str}'. Defaulting mod to 0.")
-            return award_id, 0
+        logging.info(f"Input '{contract_mod_str}' resulted in empty mod_part_full. Award ID: '{award_id}'. Mod num: 0.")
+        return award_id, 0
 
-    # 5. Attempt to extract modification number (int)
+    # 5. Attempt to extract modification number (int) from non-empty mod_part_full
     mod_num = 0
     mod_num_found = False
 
@@ -249,10 +254,11 @@ def format_as_currency(amount: int) -> str:
     Returns:
         str: Formatted currency string with $ symbol and commas
     """
-    # Round to nearest dollar
-    rounded_amount = round(amount)
+    # Convert to Decimal for precise arithmetic, though for int input it might be overkill
+    # but good practice if floats were allowed.
+    amount_decimal = Decimal(amount)
     
-    # Format with commas and add dollar sign
-    formatted_string = "${:,}".format(rounded_amount)
+    # Format to two decimal places, with commas for thousands separator
+    formatted_string = "${:,.2f}".format(amount_decimal)
     
     return formatted_string
