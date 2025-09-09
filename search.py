@@ -1,12 +1,13 @@
-from usa_spending_api import USASpendingClient, Award
-from doge_search import DOGEQuery
-from npdv_query import NPDVQuery
-from nasa_grants_query import NASAGrantsQuery
 import pandas as pd
 from datetime import datetime
 from typing import List, Dict
 import os
 import logging
+from doge_search import DOGEQuery
+from npdv_query import NPDVQuery
+from nasa_grants_query import NASAGrantsQuery
+from usaspending import USASpendingClient, Award
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -40,20 +41,9 @@ class Search():
         # Remove award IDs that are in the ignore list
         self.unique_award_ids = [award_id for award_id in self.unique_award_ids if award_id not in self.ignore_award_ids]
 
-        # Query the USASpending API for all awards using the unique award IDs
-        if self.unique_award_ids:
-            # Check if the number of unique award IDs exceeds the API limit of 100
-            # If it does, we need to split them into chunks of 100
-            # and make multiple API calls
-            if len(self.unique_award_ids) > USASpendingClient.RESULTS_LIMIT:
-                chunks = [self.unique_award_ids[i:i + USASpendingClient.RESULTS_LIMIT] for i in range(0, len(self.unique_award_ids), USASpendingClient.RESULTS_LIMIT)]
-                self.awards = []
-                for chunk in chunks:
-                    self.awards.extend(self.client.all_award_search(chunk))
-            else:
-                self.awards = self.client.all_award_search(self.unique_award_ids)
-        else:
-            self.awards = []
+        contracts = self.client.awards.search().with_award_ids(*self.unique_award_ids).contracts().all()
+        grants = self.client.awards.search().with_award_ids(*self.unique_award_ids).grants().all()
+        self.awards = contracts + grants
         
         print(f"Found {len(self.awards)} awards from USASpending API.")
         
@@ -117,7 +107,7 @@ class Search():
                 continue
             # Find the relevant award award_id is in the awards list
             for award in awards:
-                if award.prime_award_id == award_id:
+                if award.award_identifier == award_id:
                     
                     # Search the relevant source dataframe for the original description
                     # and add it to the award object
@@ -136,10 +126,10 @@ class Search():
                         award.period_of_performance.last_modified_date,
                         award.period_of_performance.start_date,
                         award.period_of_performance.end_date,
-                        award.potential_value,
+                        award.award_amount,
                         award.total_outlay,
                         (original_description or award.description),
-                        ", ".join(award.recipient.business_categories),
+                        ", ".join(award.recipient.business_types),
                         award.usa_spending_url
                     ]
                     break

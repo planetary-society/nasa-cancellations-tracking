@@ -4,7 +4,6 @@ import pandas as pd
 import sys
 from typing import List, Dict, Any, Optional, Tuple
 import time
-from usa_spending_api import USASpendingClient
 from contract_query import ContractQuery, FINAL_COLUMNS
 import datetime
 from urllib.parse import urlparse, parse_qs
@@ -57,7 +56,6 @@ class DOGEQuery(ContractQuery):
         self.per_page = per_page
         self.timeout = timeout
         self.verbose = verbose
-        self.usa_spending_client = USASpendingClient() # Initialize the USAspending client
 
     def _log(self, message: str, end: str = '\n'):
         """Helper method for conditional logging based on the verbose flag."""
