@@ -105,7 +105,7 @@ class FPDSQuery(ContractQuery):
             return False
 
         award_type_lower = str(award_type).lower()
-        return 'bpa' in award_type_lower or 'blanket purchase agreement' in award_type_lower
+        return 'bpa' in award_type_lower or 'blanket purchase agreement' in award_type_lower or 'idc indefinite delivery contract' in award_type_lower
 
     def _is_bpa_call(self, award_type: str) -> bool:
         """
