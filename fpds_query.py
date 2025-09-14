@@ -107,6 +107,22 @@ class FPDSQuery(ContractQuery):
         award_type_lower = str(award_type).lower()
         return 'bpa' in award_type_lower or 'blanket purchase agreement' in award_type_lower
 
+    def _is_bpa_call(self, award_type: str) -> bool:
+        """
+        Check if the award type indicates a BPA Call Blanket Purchase Agreement.
+
+        Args:
+            award_type: The award type string from CSV
+
+        Returns:
+            True if this is a BPA Call contract, False otherwise
+        """
+        if not award_type:
+            return False
+
+        award_type_lower = str(award_type).lower()
+        return 'bpa call' in award_type_lower
+
     def _load_or_download_csv(self, start_date: date, end_date: date) -> pd.DataFrame:
         """
         Load CSV from cache if available for current date, otherwise download.
@@ -366,6 +382,9 @@ class FPDSQuery(ContractQuery):
             # Extract Award/IDV Type for BPA handling
             award_type = str(row.get('Award/IDV Type', '')).strip()
 
+            # Extract Contracting Agency ID
+            agency_id = str(row.get('Contracting Agency ID', '8000')).strip()
+
             if not contract_id:
                 print(f"Row {row_index}: Missing Contract ID, skipping", file=sys.stderr)
                 return None
@@ -383,7 +402,7 @@ class FPDSQuery(ContractQuery):
                 description = "Description not available"
 
             # Build source URL
-            source_url = self._build_source_url(contract_id, mod_number, reference_idv, award_type)
+            source_url = self._build_source_url(contract_id, mod_number, reference_idv, award_type, agency_id)
 
             # Create standardized record
             record = {
@@ -451,18 +470,30 @@ class FPDSQuery(ContractQuery):
             try:
                 # Build HTML detail URL
                 is_bpa = self._is_bpa(award_type)
+                is_bpa_call = self._is_bpa_call(award_type)
+
+                # BPA Call contracts should use AWARD contract type and transaction number 0
+                if is_bpa_call:
+                    contract_type = 'AWARD'
+                    transaction_number = '0'
+                elif is_bpa:
+                    contract_type = 'IDV'
+                    transaction_number = ''
+                else:
+                    contract_type = 'AWARD'
+                    transaction_number = '0'
 
                 url_params = {
                     'agencyID': '8000',  # NASA agency ID
                     'PIID': contract_id,
                     'modNumber': mod_number,
-                    'transactionNumber': '' if is_bpa else '0',
+                    'transactionNumber': transaction_number,
                     'idvAgencyID': '8000' if reference_idv else '',
                     'idvPIID': reference_idv if reference_idv else '',
                     'actionSource': 'searchScreen',
                     'actionCode': '',
                     'documentVersion': '1.5',
-                    'contractType': 'IDV' if is_bpa else 'AWARD',
+                    'contractType': contract_type,
                     'docType': 'B'
                 }
 
@@ -596,7 +627,7 @@ DEBUG INFO for {contract_id} mod {mod_number}
 Reason for Modification Found: '{reason_for_mod}'
 Contract Description Found: '{contract_description}'
 Generated at: {date.today()}
-URL: {self._build_source_url(contract_id, mod_number, '')}
+URL: {self._build_source_url(contract_id, mod_number, '', '')}
 ==============================================
 -->
 
@@ -611,7 +642,7 @@ URL: {self._build_source_url(contract_id, mod_number, '')}
         except Exception as e:
             print(f"DEBUG: Failed to save HTML file: {e}", file=sys.stderr)
 
-    def _build_source_url(self, contract_id: str, mod_number: str, reference_idv: str = '', award_type: str = '') -> str:
+    def _build_source_url(self, contract_id: str, mod_number: str, reference_idv: str = '', award_type: str = '', agency_id: str = '8000') -> str:
         """
         Builds the source URL for a contract detail page.
 
@@ -620,23 +651,36 @@ URL: {self._build_source_url(contract_id, mod_number, '')}
             mod_number: The modification number
             reference_idv: The reference IDV contract ID (if any)
             award_type: The award/IDV type for BPA handling
+            agency_id: The contracting agency ID from CSV (defaults to NASA's 8000)
 
         Returns:
             The complete URL to the contract detail page
         """
         is_bpa = self._is_bpa(award_type)
+        is_bpa_call = self._is_bpa_call(award_type)
+
+        # BPA Call contracts should use AWARD contract type and transaction number 0
+        if is_bpa_call:
+            contract_type = 'AWARD'
+            transaction_number = '0'
+        elif is_bpa:
+            contract_type = 'IDV'
+            transaction_number = ''
+        else:
+            contract_type = 'AWARD'
+            transaction_number = '0'
 
         params = {
-            'agencyID': '8000',
+            'agencyID': agency_id,
             'PIID': contract_id,
             'modNumber': mod_number,
-            'transactionNumber': '' if is_bpa else '0',
-            'idvAgencyID': '8000' if reference_idv else '',
+            'transactionNumber': transaction_number,
+            'idvAgencyID': agency_id if reference_idv else '',
             'idvPIID': reference_idv if reference_idv else '',
             'actionSource': 'searchScreen',
             'actionCode': '',
             'documentVersion': '1.5',
-            'contractType': 'IDV' if is_bpa else 'AWARD',
+            'contractType': contract_type,
             'docType': 'B'
         }
 
