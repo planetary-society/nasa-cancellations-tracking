@@ -13,3 +13,4 @@ titlecase==2.4.1
 tzdata==2025.2
 urllib3==2.3.0
 usaspending-orm @ git+https://github.com/planetary-society/usaspending-orm.git
+beauitfulsoup4

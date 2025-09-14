@@ -6,6 +6,7 @@ import logging
 from doge_search import DOGEQuery
 from npdv_query import NPDVQuery
 from nasa_grants_query import NASAGrantsQuery
+from fpds_query import FPDSQuery
 from usaspending import USASpendingClient, Award
 
 # Configure logging
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 class Search():
     def __init__(self):
         self.client = USASpendingClient()
-        self.sources = ["DOGE", "NPDV", "NASAGrants"]
+        self.sources = ["DOGE", "NPDV", "NASAGrants","FPDS"]
         self.sources_cancellation_data: Dict[str,pd.DataFrame] = {} # key: source name, value: source dataframe
         self.unique_award_ids: List[str] = []
         self.unique_cancellations: Dict[str, List] = {} # key: award_id, value: List[award details]
@@ -86,6 +87,8 @@ class Search():
         df.to_csv(csv_filename, index=False)
         
         print(f"CSV saved at {csv_filename}")
+        
+        self.client.close()        
         
     def _add_source_awards(self, source_name: str, source_award_ids: List[str], awards: List[Award]):
         """
