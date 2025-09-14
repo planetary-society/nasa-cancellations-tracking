@@ -12,5 +12,5 @@ tabulate==0.9.0
 titlecase==2.4.1
 tzdata==2025.2
 urllib3==2.3.0
-usaspending-orm @ git+https://github.com/planetary-society/usaspending-orm.git
+usaspending-orm @ git+https://github.com/planetary-society/usaspending-orm.git@v0.5.1
 beautifulsoup4
