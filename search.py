@@ -42,8 +42,8 @@ class Search():
         # Remove award IDs that are in the ignore list
         self.unique_award_ids = [award_id for award_id in self.unique_award_ids if award_id not in self.ignore_award_ids]
 
-        contracts = self.client.awards.search().with_award_ids(*self.unique_award_ids).contracts().all()
-        grants = self.client.awards.search().with_award_ids(*self.unique_award_ids).grants().all()
+        contracts = self.client.awards.search().award_ids(*self.unique_award_ids).contracts().all()
+        grants = self.client.awards.search().award_ids(*self.unique_award_ids).grants().all()
         self.awards = contracts + grants
         
         print(f"Found {len(self.awards)} awards from USASpending API.")
