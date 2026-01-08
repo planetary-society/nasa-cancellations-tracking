@@ -68,13 +68,6 @@ class NASAGrantsQuery(ContractQuery):
         
         return date_changes
 
-        # Combine the two DataFrames
-        #combined_df = pd.concat([date_changes, cancelled], ignore_index=True)
-        # Remove duplicates based on 'Award ID' and 'description'
-        #combined_df.drop_duplicates(subset=['Award ID'], inplace=True)
-        
-        #return combined_df
-
     def search_nasa_grants(self,
                start_date: date = date(2025, 1, 21),
                end_date: Optional[date] = None,

@@ -14,6 +14,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class Search():
+    """
+    Orchestrates the contract/grant cancellation search across multiple data sources.
+
+    Queries DOGE API, NPDV CSV, NASA Grants API, and FPDS for potential NASA award
+    cancellations/terminations, then enriches results with USAspending.gov data.
+    """
+
     def __init__(self):
         self.client = USASpendingClient()
         self.sources = ["DOGE", "NPDV", "NASAGrants","FPDS"]
@@ -24,7 +31,14 @@ class Search():
         self.ignore_award_ids: List[str] = ["80LARC19F0086","80LARC25F7014","80JSC024F0024","80JSC024F0026","80LARC21F0053","80NSSC19K0714"]
 
     def search(self):
-        
+        """
+        Execute the full search workflow.
+
+        1. Query all data sources for potential cancellations
+        2. Collect unique award IDs
+        3. Enrich with USAspending.gov details
+        4. Export consolidated CSV to consolidated/ directory
+        """
         # Query all sources and collect both their returned dataframes and a list of unique award ids
         for source in self.sources:
             # Dynamically get the query class based on the source name

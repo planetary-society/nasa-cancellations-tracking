@@ -5,6 +5,12 @@ __pycache__/
 
 .DS_Store
 
+# Claude Code local configuration
+.claude/
+
+# Debug output from FPDS scraping
+debug_html/
+
 # Ignore downloaded NPDV data files
 nasa_contracts_2025.csv
 nasa_contracts_2025.csv
