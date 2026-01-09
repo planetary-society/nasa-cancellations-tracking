@@ -12,8 +12,7 @@ __pycache__/
 debug_html/
 
 # Ignore downloaded NPDV data files
-nasa_contracts_2025.csv
-nasa_contracts_2025.csv
+nasa_contracts_*.csv
 
 # C extensions
 *.so
