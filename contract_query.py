@@ -10,19 +10,25 @@ from typing import List, Optional
 from abc import ABC, abstractmethod
 
 
-def find_most_recent_csv(directory: str, filename_base: str) -> Optional[str]:
+def find_most_recent_csv(directory: str, filename_base: str, exclude_file: Optional[str] = None) -> Optional[str]:
     """
     Find the most recent CSV file matching the base name pattern.
 
     Args:
         directory: Directory to search in
         filename_base: Base filename (without date and extension)
+        exclude_file: Optional file path to exclude from search (e.g., the file being written)
 
     Returns:
         Path to most recent matching file, or None if no matches found
     """
     pattern = os.path.join(directory, f"{filename_base}_*.csv")
     files = glob.glob(pattern)
+
+    # Exclude the specified file if provided
+    if exclude_file:
+        exclude_file = os.path.normpath(exclude_file)
+        files = [f for f in files if os.path.normpath(f) != exclude_file]
 
     if not files:
         return None
@@ -44,38 +50,22 @@ def find_most_recent_csv(directory: str, filename_base: str) -> Optional[str]:
     return dated_files[0][1]
 
 
-def dataframes_equal(df1: pd.DataFrame, df2: pd.DataFrame, sort_col: str = 'Award ID') -> bool:
+def csv_files_equal(file1: str, file2: str) -> bool:
     """
-    Compare two DataFrames for equality after sorting.
+    Compare two CSV files for byte-for-byte equality.
+
+    This is more reliable than DataFrame comparison since it avoids
+    issues with type coercion, NaN handling, and float precision.
 
     Args:
-        df1: First DataFrame
-        df2: Second DataFrame
-        sort_col: Column to sort by before comparison
+        file1: Path to first CSV file
+        file2: Path to second CSV file
 
     Returns:
-        True if DataFrames are equal, False otherwise
+        True if files are identical, False otherwise
     """
-    # Check if columns match
-    if set(df1.columns) != set(df2.columns):
-        return False
-
-    # Check if row counts match
-    if len(df1) != len(df2):
-        return False
-
-    # Sort both DataFrames by sort column if it exists
-    if sort_col in df1.columns:
-        df1_sorted = df1.sort_values(by=sort_col).reset_index(drop=True)
-        df2_sorted = df2.sort_values(by=sort_col).reset_index(drop=True)
-    else:
-        df1_sorted = df1.reset_index(drop=True)
-        df2_sorted = df2.reset_index(drop=True)
-
-    # Ensure columns are in same order
-    df2_sorted = df2_sorted[df1_sorted.columns]
-
-    return df1_sorted.equals(df2_sorted)
+    import filecmp
+    return filecmp.cmp(file1, file2, shallow=False)
 
 # --- Configuration ---
 # Defines the standard column structure for the output DataFrame
@@ -121,25 +111,36 @@ class ContractQuery(ABC):
             data: The DataFrame to export.
             filename_base: The base name of the output CSV file.
         """
+        import tempfile
+        import shutil
+
         # Ensure the data directory exists
         os.makedirs("data", exist_ok=True)
 
         # Construct the full file path
         filename = os.path.join("data", f"{filename_base}_{date.today().strftime('%Y-%m-%d')}.csv")
 
-        # Check if data matches most recent existing file
-        most_recent = find_most_recent_csv("data", filename_base)
-        if most_recent:
-            try:
-                existing_data = pd.read_csv(most_recent)
-                if dataframes_equal(data, existing_data):
-                    print(f"No changes from prior file, skipping export to {filename}", file=sys.stderr)
-                    return
-            except Exception as e:
-                print(f"Warning: Could not compare with prior file: {e}", file=sys.stderr)
+        # Write to temp file first
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as tmp:
+                tmp_path = tmp.name
+                data.to_csv(tmp_path, index=False)
 
-        data.to_csv(filename, index=False)
-        print(f"Data exported to {filename}", file=sys.stderr)
+            # Compare with most recent existing file
+            most_recent = find_most_recent_csv("data", filename_base, exclude_file=filename)
+            if most_recent and csv_files_equal(tmp_path, most_recent):
+                print(f"No changes from prior file, skipping export to {filename}", file=sys.stderr)
+                return
+
+            # Move temp file to final location
+            shutil.move(tmp_path, filename)
+            tmp_path = None  # Prevent cleanup since file was moved
+            print(f"Data exported to {filename}", file=sys.stderr)
+        finally:
+            # Clean up temp file if it still exists
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     @abstractmethod
     def search(self, **kwargs) -> pd.DataFrame:
