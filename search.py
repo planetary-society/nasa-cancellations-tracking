@@ -8,6 +8,7 @@ from npdv_query import NPDVQuery
 from nasa_grants_query import NASAGrantsQuery
 from fpds_query import FPDSQuery
 from usaspending import USASpendingClient, Award
+from contract_query import find_most_recent_csv, dataframes_equal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -93,13 +94,26 @@ class Search():
         
         # Make output directory if it doesn't exist
         os.makedirs("consolidated", exist_ok=True)
-        
-        csv_filename = f"nasa_contract_cancellations_{datetime.now().strftime('%Y-%m-%d')}.csv"
-        
-        csv_filename = os.path.join("consolidated", csv_filename)
+
+        csv_filename = os.path.join(
+            "consolidated",
+            f"nasa_contract_cancellations_{datetime.now().strftime('%Y-%m-%d')}.csv"
+        )
+
+        # Check if data matches most recent existing file
+        most_recent = find_most_recent_csv("consolidated", "nasa_contract_cancellations")
+        if most_recent:
+            try:
+                existing_data = pd.read_csv(most_recent)
+                if dataframes_equal(df, existing_data):
+                    print(f"No changes from prior file, skipping export to {csv_filename}")
+                    self.client.close()
+                    return
+            except Exception as e:
+                print(f"Warning: Could not compare with prior file: {e}")
+
         # Save the DataFrame to a CSV file
         df.to_csv(csv_filename, index=False)
-        
         print(f"CSV saved at {csv_filename}")
         
         self.client.close()        

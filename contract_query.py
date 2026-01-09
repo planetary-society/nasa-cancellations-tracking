@@ -3,9 +3,79 @@
 import pandas as pd
 import sys
 import os
+import glob
+import re
 from datetime import date
-from typing import List
+from typing import List, Optional
 from abc import ABC, abstractmethod
+
+
+def find_most_recent_csv(directory: str, filename_base: str) -> Optional[str]:
+    """
+    Find the most recent CSV file matching the base name pattern.
+
+    Args:
+        directory: Directory to search in
+        filename_base: Base filename (without date and extension)
+
+    Returns:
+        Path to most recent matching file, or None if no matches found
+    """
+    pattern = os.path.join(directory, f"{filename_base}_*.csv")
+    files = glob.glob(pattern)
+
+    if not files:
+        return None
+
+    # Extract dates from filenames and sort
+    date_pattern = re.compile(r'_(\d{4}-\d{2}-\d{2})\.csv$')
+    dated_files = []
+
+    for f in files:
+        match = date_pattern.search(f)
+        if match:
+            dated_files.append((match.group(1), f))
+
+    if not dated_files:
+        return None
+
+    # Sort by date descending and return most recent
+    dated_files.sort(key=lambda x: x[0], reverse=True)
+    return dated_files[0][1]
+
+
+def dataframes_equal(df1: pd.DataFrame, df2: pd.DataFrame, sort_col: str = 'Award ID') -> bool:
+    """
+    Compare two DataFrames for equality after sorting.
+
+    Args:
+        df1: First DataFrame
+        df2: Second DataFrame
+        sort_col: Column to sort by before comparison
+
+    Returns:
+        True if DataFrames are equal, False otherwise
+    """
+    # Check if columns match
+    if set(df1.columns) != set(df2.columns):
+        return False
+
+    # Check if row counts match
+    if len(df1) != len(df2):
+        return False
+
+    # Sort both DataFrames by sort column if it exists
+    if sort_col in df1.columns:
+        df1_sorted = df1.sort_values(by=sort_col).reset_index(drop=True)
+        df2_sorted = df2.sort_values(by=sort_col).reset_index(drop=True)
+    else:
+        df1_sorted = df1.reset_index(drop=True)
+        df2_sorted = df2.reset_index(drop=True)
+
+    # Ensure columns are in same order
+    df2_sorted = df2_sorted[df1_sorted.columns]
+
+    return df1_sorted.equals(df2_sorted)
 
 # --- Configuration ---
 # Defines the standard column structure for the output DataFrame
@@ -44,19 +114,30 @@ class ContractQuery(ABC):
     def export_to_csv(self, data: pd.DataFrame, filename_base: str):
         """
         Exports the provided DataFrame to a CSV file to the data directory.
-        appends the current date to the filename.
+        Appends the current date to the filename. Skips writing if data
+        is identical to the most recent existing file.
 
         Args:
             data: The DataFrame to export.
-            filename: The name of the output CSV file.
+            filename_base: The base name of the output CSV file.
         """
         # Ensure the data directory exists
         os.makedirs("data", exist_ok=True)
-        
+
         # Construct the full file path
-        filename_base = os.path.join("data", filename_base)
-        filename = filename_base + "_" + date.today().strftime("%Y-%m-%d") + ".csv"
-        
+        filename = os.path.join("data", f"{filename_base}_{date.today().strftime('%Y-%m-%d')}.csv")
+
+        # Check if data matches most recent existing file
+        most_recent = find_most_recent_csv("data", filename_base)
+        if most_recent:
+            try:
+                existing_data = pd.read_csv(most_recent)
+                if dataframes_equal(data, existing_data):
+                    print(f"No changes from prior file, skipping export to {filename}", file=sys.stderr)
+                    return
+            except Exception as e:
+                print(f"Warning: Could not compare with prior file: {e}", file=sys.stderr)
+
         data.to_csv(filename, index=False)
         print(f"Data exported to {filename}", file=sys.stderr)
 
