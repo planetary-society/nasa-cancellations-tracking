@@ -59,14 +59,18 @@ class NASAGrantsQuery(ContractQuery):
             date_changes['status'].str.contains("decrease", case=False, na=False)
         ]
         
-        # Find cancelled grants but don't return them in output for now
+        # Find cancelled grants
         cancelled = self.search_nasa_grants(
             start_date=date(2025, 1, 21),
             end_date=date(2030, 1, 19),
             status="Cancelled"
         )
-        
-        return date_changes
+
+        # Combine date changes and cancelled grants, removing duplicates
+        combined_df = pd.concat([date_changes, cancelled], ignore_index=True)
+        combined_df.drop_duplicates(subset=['Award ID'], inplace=True)
+
+        return combined_df
 
     def search_nasa_grants(self,
                start_date: date = date(2025, 1, 21),
