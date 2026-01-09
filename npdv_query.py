@@ -31,28 +31,37 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class NPDVQuery(ContractQuery):
     """
-    Queries NASA contract data from a specific CSV file, caching it locally.
+    Queries NASA contract data from CSV files (FY2025 and FY2026), caching locally.
     Identifies potentially terminated/stopped contracts based on keywords found
-    *only in the latest modification* for each unique Award ID, using csv.DictReader.
+    *only in the latest modification* for each unique Award ID.
+
+    Processes FY2025 first, then FY2026. For duplicate Award IDs, the entry with
+    the highest modification number wins (regardless of which file it came from).
     """
     DEFAULT_SEARCH_PHRASES = ["termination", "stop work", "terminated", "terminates", "effectuate"]
-    DEFAULT_CSV_URL = "https://raw.githubusercontent.com/planetary-society/nasa-contracts/master/data/nasa_contracts_2025.csv"
+    DEFAULT_CSV_URL_2025 = "https://raw.githubusercontent.com/planetary-society/nasa-contracts/master/data/nasa_contracts_2025.csv"
+    DEFAULT_CSV_URL_2026 = "https://raw.githubusercontent.com/planetary-society/nasa-contracts/refs/heads/master/data/nasa_contracts_2026.csv"
+    DEFAULT_CSV_URLS = [DEFAULT_CSV_URL_2025, DEFAULT_CSV_URL_2026]  # Order matters: FY2025 first, then FY2026
     AGENCY_NAME = "National Aeronautics and Space Administration"
 
     def __init__(self,
-                 csv_url: str = DEFAULT_CSV_URL,
+                 csv_urls: Optional[List[str]] = None,
                  search_phrases: Optional[List[str]] = None,
                  local_cache_dir: str = ".",
-                 # chunk_size parameter removed
                  final_columns: List[str] = FINAL_COLUMNS):
         """Initializes the query object."""
         super().__init__(final_columns=final_columns)
-        self.csv_url = csv_url
+        self.csv_urls = csv_urls if csv_urls is not None else self.DEFAULT_CSV_URLS
         self.search_phrases = search_phrases if search_phrases is not None else self.DEFAULT_SEARCH_PHRASES
         self.local_cache_dir = local_cache_dir
-        # self.chunk_size attribute removed
-        self._local_filename = self._generate_local_filename(csv_url)
-        self._local_filepath = os.path.join(self.local_cache_dir, self._local_filename) if self._local_filename else None
+
+        # Generate local filepaths for each URL
+        self._local_filepaths = []
+        for url in self.csv_urls:
+            filename = self._generate_local_filename(url)
+            if filename:
+                self._local_filepaths.append((url, os.path.join(self.local_cache_dir, filename)))
+
         if self.search_phrases:
             self._search_pattern_re = re.compile(
                 r'\b(?:' + '|'.join(re.escape(phrase) for phrase in self.search_phrases) + r')\b',
@@ -62,8 +71,7 @@ class NPDVQuery(ContractQuery):
             logging.warning("No search phrases provided; search will likely return no results.")
             self._search_pattern_re = None
 
-        logging.info(f"{self.__class__.__name__} initialized. URL='{self.csv_url}', "
-                     f"CacheFile='{self._local_filepath}', Phrases={self.search_phrases}") # Removed ChunkSize log
+        logging.info(f"{self.__class__.__name__} initialized. URLs={self.csv_urls}, Phrases={self.search_phrases}")
 
     def _generate_local_filename(self, url: str) -> Optional[str]:
         """Generates a safe filename from a URL. (Implementation unchanged)"""
@@ -106,20 +114,19 @@ class NPDVQuery(ContractQuery):
             logging.warning(f"Could not parse date string '{date_str}' using format '{input_format}'. Returning empty string. Error: {e}")
             return "" # Return empty string on failure
 
-    def _download_file(self, filepath: str) -> bool:
-        """Downloads the file from self.csv_url to the specified filepath. (Implementation unchanged)"""
-        # (Code from previous version remains the same)
-        logging.info(f"Attempting to download data from {self.csv_url} to {filepath}")
+    def _download_file(self, url: str, filepath: str) -> bool:
+        """Downloads the file from the given URL to the specified filepath."""
+        logging.info(f"Attempting to download data from {url} to {filepath}")
         try:
-            with requests.get(self.csv_url, stream=True, timeout=60) as r:
+            with requests.get(url, stream=True, timeout=60) as r:
                 r.raise_for_status()
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else ".", exist_ok=True)
                 with open(filepath, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
             logging.info(f"Successfully downloaded file to {filepath}")
             return True
         except requests.exceptions.RequestException as e:
-            logging.error(f"Failed to download file from {self.csv_url}: {e}")
+            logging.error(f"Failed to download file from {url}: {e}")
             if os.path.exists(filepath):
                  try: os.remove(filepath)
                  except OSError as rm_err: logging.error(f"Failed to remove incomplete download {filepath}: {rm_err}")
@@ -127,20 +134,18 @@ class NPDVQuery(ContractQuery):
         except OSError as e: logging.error(f"Failed to write downloaded file to {filepath}: {e}"); return False
         except Exception as e: logging.error(f"An unexpected error during download: {e}", exc_info=True); return False
 
-
-    def _get_data_filepath(self, force_reload: bool = False) -> Optional[str]:
-        """Ensures the data file is available locally, downloading if needed. (Implementation unchanged)"""
-        # (Code from previous version remains the same)
-        if not self._local_filepath: logging.error("Local file path could not be determined."); return None
-        file_exists = os.path.exists(self._local_filepath)
+    def _get_data_filepath(self, url: str, filepath: str, force_reload: bool = False) -> Optional[str]:
+        """Ensures the data file is available locally, downloading if needed."""
+        if not filepath: logging.error("Local file path could not be determined."); return None
+        file_exists = os.path.exists(filepath)
         if force_reload:
-            logging.info(f"Force reload requested. Downloading fresh data to {self._local_filepath}...")
-            if self._download_file(self._local_filepath): return self._local_filepath
+            logging.info(f"Force reload requested. Downloading fresh data to {filepath}...")
+            if self._download_file(url, filepath): return filepath
             else: return None
-        elif file_exists: logging.info(f"Using cached file: {self._local_filepath}"); return self._local_filepath
+        elif file_exists: logging.info(f"Using cached file: {filepath}"); return filepath
         else:
-            logging.info(f"Local file not found. Downloading to {self._local_filepath}...")
-            if self._download_file(self._local_filepath): return self._local_filepath
+            logging.info(f"Local file not found. Downloading to {filepath}...")
+            if self._download_file(url, filepath): return filepath
             else: return None
 
     def search(self, force_reload: bool = False, **kwargs) -> pd.DataFrame:
@@ -165,61 +170,66 @@ class NPDVQuery(ContractQuery):
              logging.error("Search cannot proceed without valid search phrases/pattern.")
              return pd.DataFrame(columns=self.final_columns)
 
-        # 1. Get the path to the local data file
-        local_filepath = self._get_data_filepath(force_reload=force_reload)
-        if not local_filepath:
-            logging.error("Could not obtain local data file. Aborting search.")
-            return pd.DataFrame(columns=self.final_columns)
-
         # Dictionary to hold the data for the latest modification found per Award ID
         # Structure: {award_id: (mod_num, row_dict)}
         latest_rows: Dict[str, Tuple[int, Dict[str, str]]] = {}
         required_cols = ['Contract/Mod Number', 'Description', 'Award Type', 'Completion Date', 'Contractor']
 
-        logging.info(f"Scanning CSV file to find latest modifications: {local_filepath}")
-        try:
-            # 2. First Pass: Read CSV and find the latest modification row for each Award ID
-            with open(local_filepath, mode='r', newline='', encoding='utf-8') as csvfile:
-                # Handle potential dialect issues like quote characters if needed
-                reader = csv.DictReader(csvfile)
+        # Process each CSV file in order (FY2025 first, then FY2026)
+        # Later files with same/higher mod numbers will override earlier entries
+        for url, filepath in self._local_filepaths:
+            local_filepath = self._get_data_filepath(url, filepath, force_reload=force_reload)
+            if not local_filepath:
+                logging.warning(f"Could not obtain data file from {url}. Skipping.")
+                continue
 
-                # Check header row
-                if not reader.fieldnames:
-                    logging.error(f"CSV file '{local_filepath}' appears to be empty or header is missing.")
-                    return pd.DataFrame(columns=self.final_columns)
-                if not all(col in reader.fieldnames for col in required_cols):
-                    missing = [col for col in required_cols if col not in reader.fieldnames]
-                    logging.error(f"CSV file is missing required columns: {missing}. Aborting.")
-                    return pd.DataFrame(columns=self.final_columns)
+            logging.info(f"Scanning CSV file to find latest modifications: {local_filepath}")
+            try:
+                with open(local_filepath, mode='r', newline='', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
 
-                row_count = 0
-                for row in reader:
-                    row_count += 1
-                    try:
-                        contract_mod_str = row.get('Contract/Mod Number', '')
-                        award_id, mod_num = parse_mod_number(contract_mod_str)
+                    # Check header row
+                    if not reader.fieldnames:
+                        logging.error(f"CSV file '{local_filepath}' appears to be empty or header is missing.")
+                        continue
+                    if not all(col in reader.fieldnames for col in required_cols):
+                        missing = [col for col in required_cols if col not in reader.fieldnames]
+                        logging.error(f"CSV file is missing required columns: {missing}. Skipping.")
+                        continue
 
-                        if not award_id: # Skip if award ID couldn't be parsed
-                            continue
+                    row_count = 0
+                    for row in reader:
+                        row_count += 1
+                        try:
+                            contract_mod_str = row.get('Contract/Mod Number', '')
+                            award_id, mod_num = parse_mod_number(contract_mod_str)
 
-                        # Check if this mod is later than or equal to the one stored
-                        stored_data = latest_rows.get(award_id)
-                        if stored_data is None or mod_num >= stored_data[0]:
-                             # Store/update with the current mod_num and the raw row dict
-                             latest_rows[award_id] = (mod_num, row)
+                            if not award_id: # Skip if award ID couldn't be parsed
+                                continue
 
-                    except Exception as e:
-                         # Log error processing a specific row but continue scanning
-                         logging.error(f"Error processing row {row_count} during scan: {row}. Error: {e}", exc_info=False)
+                            # Check if this mod is later than or equal to the one stored
+                            stored_data = latest_rows.get(award_id)
+                            if stored_data is None or mod_num >= stored_data[0]:
+                                 # Store/update with the current mod_num and the raw row dict
+                                 latest_rows[award_id] = (mod_num, row)
 
-                logging.info(f"Finished scanning {row_count} rows. Found {len(latest_rows)} unique Award IDs with latest modifications.")
+                        except Exception as e:
+                             logging.error(f"Error processing row {row_count} during scan: {row}. Error: {e}", exc_info=False)
 
-        except FileNotFoundError:
-            logging.error(f"Cached file not found: {local_filepath}")
+                    logging.info(f"Finished scanning {row_count} rows from {local_filepath}.")
+
+            except FileNotFoundError:
+                logging.error(f"Cached file not found: {local_filepath}")
+                continue
+            except Exception as e:
+                logging.error(f"An unexpected error occurred during CSV scanning: {e}", exc_info=True)
+                continue
+
+        if not latest_rows:
+            logging.error("No data found from any CSV file. Aborting search.")
             return pd.DataFrame(columns=self.final_columns)
-        except Exception as e:
-            logging.error(f"An unexpected error occurred during CSV scanning: {e}", exc_info=True)
-            return pd.DataFrame(columns=self.final_columns)
+
+        logging.info(f"Found {len(latest_rows)} unique Award IDs with latest modifications across all files.")
 
 
         # 3. Second Pass: Filter the latest modifications based on the description

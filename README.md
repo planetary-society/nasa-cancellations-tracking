@@ -11,10 +11,10 @@ The primary goal is to provide a consolidated list of NASA awards that warrant f
 The tool currently integrates with the following data sources:
 
 1.  **DOGE API (`doge_search.py`):** Queries `https://api.doge.gov/savings/contracts` and `https://api.doge.gov/savings/grants` specifically for entries where the agency is identified as NASA. It extracts Award IDs (PIID/FAIN) from linked URLs.
-2.  **NPDV CSV (`npdv_query.py`):** Downloads and processes a specific CSV file (default: `https://raw.githubusercontent.com/planetary-society/nasa-contracts/master/data/nasa_contracts_2025.csv`). It identifies potential terminations by searching for keywords like "termination" or "stop work" *only within the description of the latest modification* found for each unique Award ID in the CSV.
-3.  **NASA Grants API (`nasa_grants_query.py`):** Queries `https://www3.nasa.gov/api/2/grants/_search`. It specifically looks for grants awarded since Jan 21, 2025, whose status indicates a cancellation, termination, or a *decrease* in the period of performance end date.
+2.  **NPDV CSV (`npdv_query.py`):** Downloads and processes contract data from NASA's Procurement Data View from the [The Planetary Society's NASA Contracts repo]. It identifies potential terminations by searching for keywords like "termination" or "stop work" *only within the description of the latest modification* found for each unique Award ID.
+3.  **NASA Grants API (`nasa_grants_query.py`):** Queries NASA's Grant Search Form. It specifically looks for grants awarded since Jan 21, 2025, whose status indicates a cancellation, termination, or a sudden decrease in the period of performance end date.
 4.  **FPDS (`fpds_query.py`):** Queries the Federal Procurement Data System (FPDS) for NASA contracts with "Terminate for Convenience" modifications since Jan 20, 2025. Fetches detailed descriptions from HTML detail pages.
-5.  **USAspending.gov API:** Uses the [`usaspending`](https://pypi.org/project/usaspending/) package to retrieve comprehensive details (recipient, funding, dates, location, etc.) for the unique Award IDs flagged by the other sources.
+5.  **USAspending.gov API:** Uses the [`usaspending-orm`](https://pypi.org/project/usaspending-orm/) package to retrieve comprehensive details (recipient, funding, dates, location, etc.) for the unique Award IDs flagged by the other sources.
 
 ## Core Workflow (`search.py`)
 
