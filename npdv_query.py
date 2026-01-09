@@ -242,6 +242,10 @@ class NPDVQuery(ContractQuery):
 
                 # Apply the search pattern filter
                 if description and self._search_pattern_re.search(description):
+                    # Exclude "termination for cause" - these are contractor failures, not cancellations
+                    if re.search(r'\btermination\s+for\s+cause\b', description, re.IGNORECASE):
+                        continue
+
                     # If description matches, format this row for final output
                     award_type_str = row_dict.get('Award Type', '').lower()
                     source_type = "Grant" if "grant" in award_type_str else "Contract"
