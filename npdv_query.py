@@ -282,6 +282,8 @@ class NPDVQuery(ContractQuery):
                 final_df = pd.DataFrame(final_results_list, columns=self.final_columns)
                 # Reindex to ensure exact column order and presence
                 final_df = final_df.reindex(columns=self.final_columns)
+                # Sort by Award ID for deterministic ordering
+                final_df = final_df.sort_values(by=['Award ID']).reset_index(drop=True)
                 logging.info(f"Created final DataFrame with {len(final_df)} terminated contracts based on latest modification.")
                 if not final_df.empty:
                     self.export_to_csv(final_df, "npdv_potential_cancellations")

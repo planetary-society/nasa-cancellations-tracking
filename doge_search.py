@@ -338,6 +338,8 @@ class DOGEQuery(ContractQuery):
 
         # Save the final DataFrame to CSV
         if not final_df.empty:
+            # Sort by Award ID for deterministic ordering
+            final_df = final_df.sort_values(by=['Award ID']).reset_index(drop=True)
             self.export_to_csv(final_df, "doge_contracts_and_grants_query")
 
         return final_df

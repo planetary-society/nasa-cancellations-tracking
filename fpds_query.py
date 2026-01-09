@@ -306,6 +306,8 @@ class FPDSQuery(ContractQuery):
 
         # Step 7: Export final results
         if not final_df.empty:
+            # Sort by Award ID for deterministic ordering
+            final_df = final_df.sort_values(by=['Award ID']).reset_index(drop=True)
             self.export_to_csv(final_df, "fpds_processed_contracts")
 
         return final_df

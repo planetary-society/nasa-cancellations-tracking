@@ -150,8 +150,8 @@ class NASAGrantsQuery(ContractQuery):
         
         # Dump hits to CSV for recordkeping
         raw_df = pd.json_normalize(hits)
-        # Sort by _source.pop_end_date asc
-        raw_df.sort_values(by=['_source.pop_end_date'], ascending=True, inplace=True)
+        # Sort by pop_end_date and _id for deterministic ordering (_id is unique)
+        raw_df.sort_values(by=['_source.pop_end_date', '_id'], ascending=True, inplace=True)
         
         if status == "Cancelled":
             self.export_to_csv(raw_df, "nasa_grants_cancelled_query")
