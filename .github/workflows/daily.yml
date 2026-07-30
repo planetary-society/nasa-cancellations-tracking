@@ -6,7 +6,7 @@ on:
     # - 7:00 AM PDT (Pacific Daylight Time, UTC-7)
     # - 8:00 AM PST (Pacific Standard Time, UTC-8)
     # Adjust the hour if you prefer 7am PST / 6am PDT (use '14' instead of '15').
-    - cron: '0 15 * * *'
+    - cron: "0 15 * * *"
   workflow_dispatch: # Allows manual triggering from the Actions tab
 
 jobs:
@@ -22,8 +22,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10' # Specify your desired Python version
-          cache: 'pip' # Cache dependencies for faster builds
+          python-version: "3.10" # Specify your desired Python version
+          cache: "pip" # Cache dependencies for faster builds
 
       - name: Install Dependencies
         run: |
@@ -44,12 +44,30 @@ jobs:
 
           python search.py
 
+      # Runs as its own step so the ledger is refreshed every day, not only on
+      # days the sources changed: search.py returns early when today's snapshot
+      # is byte-identical to yesterday's, which skips its internal rebuild. A
+      # full rebuild also picks up any hand-edits to verification/*.csv made
+      # since the last run.
+      #
+      # Deliberately NOT --update: the incremental path rebuilds description
+      # history from the latest snapshot alone, so statuses that depend on
+      # older text (reinstated, vacated) get lost. Re-reading the archive costs
+      # ~2 seconds.
+      #
+      # Skipped automatically if search.py failed - a run that aborted must not
+      # publish a ledger built on a rejected snapshot.
+      - name: Update the Master Ledger
+        run: |
+
+          python build_master_ledger.py
+
       - name: Commit and Push Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Automated daily update"
 
-          file_pattern: "data/*.csv consolidated/*.csv"
+          file_pattern: "data/*.csv consolidated/*.csv verification/*.csv"
 
           commit_user_name: GitHub Actions Bot
           commit_user_email: github-actions-bot@users.noreply.github.com

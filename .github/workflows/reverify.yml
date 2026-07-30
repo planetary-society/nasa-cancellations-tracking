@@ -1,0 +1,47 @@
+name: Weekly Re-verification
+
+on:
+  schedule:
+    # Sundays at 09:00 UTC - deliberately 6 hours off the 15:00 daily job so
+    # the two never contend for the USAspending rate limit.
+    - cron: "0 9 * * 0"
+  workflow_dispatch: # Allows manual triggering from the Actions tab
+
+jobs:
+  reverify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Re-verify awards against USAspending transactions
+        run: |
+
+          python reverify_awards.py
+
+      - name: Commit and Push Changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Automated re-verification"
+
+          # verification/dropped_award_status.csv is human-owned and is never
+          # written by this job; it is only matched here because it shares the
+          # directory glob with the machine-written files.
+          file_pattern: "verification/*.csv consolidated/master_ledger.csv"
+
+          commit_user_name: GitHub Actions Bot
+          commit_user_email: github-actions-bot@users.noreply.github.com
+          commit_author: GitHub Actions Bot <github-actions-bot@users.noreply.github.com>

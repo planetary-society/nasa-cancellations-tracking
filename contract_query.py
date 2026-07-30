@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 
 import pandas as pd
+import csv
 import sys
 import os
 import glob
 import re
 from datetime import date
-from typing import List, Optional
+from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
 
 
-def find_most_recent_csv(directory: str, filename_base: str, exclude_file: Optional[str] = None) -> Optional[str]:
+def load_snapshot(path: str) -> Dict[str, dict]:
+    """
+    Load a consolidated snapshot CSV into a dict keyed by Award ID.
+
+    Rows without an Award ID are skipped. Shared by validate_snapshot.py and
+    build_master_ledger.py so both agree on the snapshot read contract.
+    """
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return {r["Award ID"]: r for r in csv.DictReader(fh) if r.get("Award ID")}
+
+
+def find_most_recent_csv(
+    directory: str, filename_base: str, exclude_file: Optional[str] = None
+) -> Optional[str]:
     """
     Find the most recent CSV file matching the base name pattern.
 
@@ -34,7 +48,7 @@ def find_most_recent_csv(directory: str, filename_base: str, exclude_file: Optio
         return None
 
     # Extract dates from filenames and sort
-    date_pattern = re.compile(r'_(\d{4}-\d{2}-\d{2})\.csv$')
+    date_pattern = re.compile(r"_(\d{4}-\d{2}-\d{2})\.csv$")
     dated_files = []
 
     for f in files:
@@ -65,23 +79,27 @@ def csv_files_equal(file1: str, file2: str) -> bool:
         True if files are identical, False otherwise
     """
     import filecmp
+
     return filecmp.cmp(file1, file2, shallow=False)
+
 
 # --- Configuration ---
 # Defines the standard column structure for the output DataFrame
 FINAL_COLUMNS = [
-    'Award ID',    # Unique identifier, either PIID or FAIN
-    'source_type', # e.g., 'Contract', 'Grant'
-    'recipient',   # Vendor name for contracts, Recipient for grants
-    'value',       # Contract or Grant dollar value
-    'savings',     # Reported savings value
-    'status',      # Status information (if available, e.g., FPDS status)
-    'source_url',  # Link to the source record (e.g., FPDS, USASpending)
-    'description', # Description of the contract or grant purpose
-    'agency'       # The agency name as found in the source record
+    "Award ID",  # Unique identifier, either PIID or FAIN
+    "source_type",  # e.g., 'Contract', 'Grant'
+    "recipient",  # Vendor name for contracts, Recipient for grants
+    "value",  # Contract or Grant dollar value
+    "savings",  # Reported savings value
+    "status",  # Status information (if available, e.g., FPDS status)
+    "source_url",  # Link to the source record (e.g., FPDS, USASpending)
+    "description",  # Description of the contract or grant purpose
+    "agency",  # The agency name as found in the source record
+    "claim_date",  # Date the source asserted the cancellation (claim sources only)
 ]
 
 # --- Base Class Definition ---
+
 
 class ContractQuery(ABC):
     """
@@ -118,19 +136,28 @@ class ContractQuery(ABC):
         os.makedirs("data", exist_ok=True)
 
         # Construct the full file path
-        filename = os.path.join("data", f"{filename_base}_{date.today().strftime('%Y-%m-%d')}.csv")
+        filename = os.path.join(
+            "data", f"{filename_base}_{date.today().strftime('%Y-%m-%d')}.csv"
+        )
 
         # Write to temp file first
         tmp_path = None
         try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".csv", delete=False
+            ) as tmp:
                 tmp_path = tmp.name
                 data.to_csv(tmp_path, index=False)
 
             # Compare with most recent existing file
-            most_recent = find_most_recent_csv("data", filename_base, exclude_file=filename)
+            most_recent = find_most_recent_csv(
+                "data", filename_base, exclude_file=filename
+            )
             if most_recent and csv_files_equal(tmp_path, most_recent):
-                print(f"No changes from prior file, skipping export to {filename}", file=sys.stderr)
+                print(
+                    f"No changes from prior file, skipping export to {filename}",
+                    file=sys.stderr,
+                )
                 return
 
             # Move temp file to final location

@@ -11,8 +11,10 @@ __pycache__/
 # Debug output from FPDS scraping
 debug_html/
 
-# Ignore downloaded NPDV data files
+# Ignore downloaded NPDV data files (nasa_awards_* is the current corpus,
+# nasa_contracts_* the one it replaced)
 nasa_contracts_*.csv
+nasa_awards_*.csv
 
 # C extensions
 *.so
