@@ -131,6 +131,7 @@ LEDGER_COLUMNS = [
     "Award Amount",
     "Total Outlays",
     "Description",
+    "Detection",
     "Business Categories",
     "URL",
     "Claiming Source",
@@ -177,6 +178,11 @@ REVISABLE_COLUMNS = ("Claimed Status", "Claimed Savings", "Claim Date")
 # Fields refreshed from the newest observation of an award. A blank value never
 # clobbers a populated one (the USAspending API stopped returning
 # Latest Modification Date on 2026-04-08).
+#
+# Detection is refreshed rather than write-once: it describes the award's most
+# recent detected action, so a later mod supersedes the earlier evidence. Every
+# snapshot written before 2026-07-30 lacks the column entirely, which reads as
+# blank here and therefore cannot erase a value a newer snapshot supplies.
 REFRESHED_COLUMNS = (
     "Recipient",
     "District",
@@ -187,6 +193,7 @@ REFRESHED_COLUMNS = (
     "Award Amount",
     "Total Outlays",
     "Description",
+    "Detection",
     "Business Categories",
     "URL",
 )

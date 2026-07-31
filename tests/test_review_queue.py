@@ -93,11 +93,11 @@ def make_search(source_rows, awards, ignore=()):
     return obj
 
 
-def row(aid, desc="terminated"):
+def row(aid, desc="terminated", status=""):
     return {
         "Award ID": aid,
         "description": desc,
-        "status": "",
+        "status": status,
         "savings": "",
         "claim_date": "",
     }
@@ -181,6 +181,54 @@ def test_source_description_normalizes_carriage_returns():
     assert obj.unique_cancellations["A-1"]["Description"] == (
         "first line\n  second line  "
     )
+
+
+# --- detection evidence ----------------------------------------------------
+
+
+def test_detection_is_a_snapshot_column():
+    """It has to be here or the source's evidence never leaves the query."""
+    assert "Detection" in s.SNAPSHOT_COLUMNS
+
+
+def test_snapshot_carries_each_source_detection_string():
+    """One real string per source, taken from the 2026-07-30 source CSVs.
+
+    The winning source owns the cell, so a dashboard classifying detections has
+    to cope with every shape at once.
+    """
+    detections = {
+        "DOGE": "TERMINATED",
+        "NASAGrants": "Administrative - Change Pop End Date",
+        "USAspendingTerminations": (
+            "Terminate-for-convenience action P00180 on 2026-05-06"
+        ),
+        "LocalUSASpendingMirror": (
+            "Terminate-for-convenience action P00002 on 2025-01-24; "
+            "End date truncated 221 days by mod P00002 on 2025-01-24"
+        ),
+    }
+    obj = make_search(
+        {name: [row(f"{name}-1", status=text)] for name, text in detections.items()},
+        [FakeAward(f"{name}-1") for name in detections],
+    )
+
+    for name, text in detections.items():
+        assert obj.unique_cancellations[f"{name}-1"]["Detection"] == text
+
+
+def test_source_without_detection_evidence_leaves_the_cell_empty():
+    """NPDV infers nothing it can name: it matches on description text only."""
+    obj = make_search({"NPDV": [row("A-1")]}, [FakeAward("A-1")])
+
+    assert obj.unique_cancellations["A-1"]["Detection"] == ""
+
+
+def test_an_all_blank_status_column_does_not_become_the_string_nan():
+    """pandas hands back NaN for a column of Nones, and str(NaN) is 'nan'."""
+    obj = make_search({"NPDV": [row("A-1", status=None)]}, [FakeAward("A-1")])
+
+    assert obj.unique_cancellations["A-1"]["Detection"] == ""
 
 
 def test_unresolvable_award_is_recorded_with_its_source():

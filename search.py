@@ -73,6 +73,12 @@ SNAPSHOT_COLUMNS = [
     "Award Amount",
     "Total Outlays",
     "Description",
+    # Why the winning source flagged this award, in its own words. Each query
+    # module already composes one ("Terminate-for-convenience action P00180 on
+    # 2026-05-06"); until this column existed it was dropped here, so the
+    # published data could say an award was cancelled but never on what
+    # evidence. Distinct from Claimed Status, which is an outside assertion.
+    "Detection",
     "Business Categories",
     "URL",
     *CLAIM_COLUMNS,
@@ -477,6 +483,20 @@ class Search:
                     # representation deterministic across API responses.
                     original_description = _normalize_newlines(original_description)
 
+                # Same .loc lookup for the source's own detection evidence.
+                # Sources that infer a cancellation from award data compose a
+                # sentence here; NPDV leaves it blank, and an all-blank column
+                # arrives from pandas as NaN, so it is coerced rather than
+                # stringified into the snapshot.
+                detection = source_df.loc[
+                    source_df["Award ID"] == award_id, "status"
+                ].values[0]
+                detection = (
+                    _normalize_newlines(detection).strip()
+                    if isinstance(detection, str)
+                    else ""
+                )
+
                 # The USAspending API stopped returning
                 # period_of_performance.last_modified_date on 2026-04-08
                 # (blanked the column for every source with no code
@@ -505,6 +525,7 @@ class Search:
                     "Award Amount": award.award_amount,
                     "Total Outlays": award.total_outlay,
                     "Description": (original_description or award.description),
+                    "Detection": detection,
                     "Business Categories": ", ".join(award.recipient.business_types),
                     "URL": canonical_usaspending_url(award.usa_spending_url),
                     **{

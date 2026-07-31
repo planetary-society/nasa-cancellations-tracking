@@ -38,6 +38,8 @@ An **outcome** is what the award data actually shows happened since: `Amount Tre
 
 Divergence is a comparison, not a judgement. A claimed award that grew is still reported.
 
+**Detection** is the third kind of fact: why *this tracker* flagged the award, in the flagging source's own words — `Terminate-for-convenience action P00180 on 2026-05-06`, `End date truncated 893 days by mod P00001 on 2026-01-20`, `Clawback of 100% ($448,257) on 2026-01-14`, or several joined by `; ` when more than one net fired. Unlike a claim it is **refreshed**, not write-once: it describes the most recent detected action, so a later modification supersedes the earlier evidence, and a blank never clobbers a populated value. Sources that match on description text alone (NPDV) leave it empty, and snapshots archived before the column existed carry no detection at all, so it only fills in from the run that introduced it onward.
+
 ## Re-verification (`reverify_awards.py`)
 
 The daily snapshots cannot establish whether an award is _still_ cancelled: when a closeout modification replaces the termination language, the award leaves the snapshot that same day, so the closeout is never recorded anywhere. Only the USAspending transaction history resolves this.
