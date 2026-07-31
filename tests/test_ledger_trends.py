@@ -6,6 +6,7 @@ import build_master_ledger as bml
 def rec(**kw):
     base = {
         "First Award Amount": "",
+        "Transaction Baseline Amount": "",
         "Award Amount": "",
         "First End Date": "",
         "End Date": "",
@@ -50,6 +51,67 @@ def test_missing_or_unparseable_amount_is_unknown():
         trends(**{"First Award Amount": "0", "Award Amount": "5"})["Amount Trend"]
         == "unknown"
     )
+
+
+def test_transaction_baseline_repairs_a_zero_first_observation():
+    r = trends(
+        **{
+            "Claiming Source": "DOGE",
+            "First Award Amount": "0",
+            "Transaction Baseline Amount": "28832",
+            "Award Amount": "0",
+        }
+    )
+
+    assert r["Amount Trend"] == "shrank"
+    assert r["Claim Divergence"] == "claimed_and_shrank"
+
+
+def test_transaction_baseline_repairs_a_missing_first_observation():
+    r = trends(
+        **{
+            "First Award Amount": "",
+            "Transaction Baseline Amount": "100",
+            "Award Amount": "50",
+        }
+    )
+
+    assert r["Amount Trend"] == "shrank"
+
+
+def test_zero_or_unknown_transaction_baseline_leaves_trend_unknown():
+    assert (
+        trends(
+            **{
+                "First Award Amount": "0",
+                "Transaction Baseline Amount": "0.00",
+                "Award Amount": "5",
+            }
+        )["Amount Trend"]
+        == "unknown"
+    )
+    assert (
+        trends(
+            **{
+                "First Award Amount": "0",
+                "Transaction Baseline Amount": "unknown",
+                "Award Amount": "5",
+            }
+        )["Amount Trend"]
+        == "unknown"
+    )
+
+
+def test_positive_first_observation_takes_precedence_over_transaction_baseline():
+    r = trends(
+        **{
+            "First Award Amount": "100",
+            "Transaction Baseline Amount": "500",
+            "Award Amount": "200",
+        }
+    )
+
+    assert r["Amount Trend"] == "grew"
 
 
 def test_end_date_direction():

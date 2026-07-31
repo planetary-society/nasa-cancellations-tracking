@@ -323,6 +323,31 @@ def is_generated_award_id(value: Optional[str]) -> bool:
     return (value or "").strip().startswith(GENERATED_AWARD_ID_PREFIXES)
 
 
+def canonical_generated_award_id(value: Optional[str]) -> str:
+    """Normalize legacy NASA assistance ids to USAspending's canonical form.
+
+    Historical snapshots used NASA's subtier code ``8000`` as the final
+    component of assistance ids. USAspending's transaction endpoint keys those
+    awards with the top-tier agency code ``080`` instead.
+    """
+    text = (value or "").strip()
+    match = re.fullmatch(r"ASST_(?:NON|AGG)_([^_]+)_8000", text)
+    nasa_award_id = match and match.group(1).upper().startswith(("80", "NN"))
+    if nasa_award_id:
+        return f"{text[:-5]}_080"
+    return text
+
+
+def canonical_usaspending_url(value: Optional[str]) -> str:
+    """Canonicalize the generated award id embedded in a USAspending URL."""
+    text = (value or "").strip()
+    match = re.search(r"(/award/)([^/?#]+)", text)
+    if not match:
+        return text
+    award_id = canonical_generated_award_id(match.group(2))
+    return f"{text[: match.start(2)]}{award_id}{text[match.end(2) :]}"
+
+
 def award_id_from_generated_id(value: Optional[str]) -> str:
     """Pull the PIID/FAIN out of a USAspending generated award id.
 

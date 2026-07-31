@@ -12,7 +12,7 @@ from usaspending_terminations_query import USASpendingTerminationsQuery
 from local_usaspending_mirror_query import LocalUSASpendingMirrorQuery
 from usaspending import USASpendingClient, Award
 from contract_query import find_most_recent_csv, csv_files_equal
-from utils import is_generated_award_id
+from utils import canonical_usaspending_url, is_generated_award_id
 from validate_snapshot import validate
 import build_master_ledger
 
@@ -79,10 +79,32 @@ SNAPSHOT_COLUMNS = [
 ]
 
 
+def _normalize_newlines(value: str) -> str:
+    """Use one line-ending convention inside multi-line CSV fields."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _cell(row, column: str) -> str:
     """Read one cell as a clean string, treating NaN/None as empty."""
     value = row.get(column)
-    return "" if value is None or pd.isna(value) else str(value).strip()
+    if value is None or pd.isna(value):
+        return ""
+    return _normalize_newlines(str(value)).strip()
+
+
+def _award_end_date(award: Award) -> str:
+    """Return the applicable end date for an award or IDV vehicle.
+
+    USAspending's IDV search response reports the ordering-period boundary as
+    ``Last Date to Order`` while leaving the generic period end absent. Keep
+    the regular period end authoritative and use the IDV field only as its
+    documented fallback.
+    """
+    end_date = award.period_of_performance.end_date
+    if end_date or award.category != "idv":
+        return end_date or ""
+    raw = award.raw or {}
+    return raw.get("Last Date to Order") or raw.get("last_date_to_order") or ""
 
 
 class Search:
@@ -450,6 +472,10 @@ class Search:
                 original_description = source_df.loc[
                     source_df["Award ID"] == award_id, "description"
                 ].values[0]
+                if isinstance(original_description, str):
+                    # Preserve source whitespace exactly while making newline
+                    # representation deterministic across API responses.
+                    original_description = _normalize_newlines(original_description)
 
                 # The USAspending API stopped returning
                 # period_of_performance.last_modified_date on 2026-04-08
@@ -475,12 +501,12 @@ class Search:
                     else "",
                     "Latest Modification Date": mod_date,
                     "Start Date": award.period_of_performance.start_date,
-                    "End Date": award.period_of_performance.end_date,
+                    "End Date": _award_end_date(award),
                     "Award Amount": award.award_amount,
                     "Total Outlays": award.total_outlay,
                     "Description": (original_description or award.description),
                     "Business Categories": ", ".join(award.recipient.business_types),
-                    "URL": award.usa_spending_url,
+                    "URL": canonical_usaspending_url(award.usa_spending_url),
                     **{
                         col: self.claims.get(award_id, {}).get(col, "")
                         for col in CLAIM_COLUMNS

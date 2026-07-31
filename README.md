@@ -34,7 +34,7 @@ The tracker records two different kinds of fact, and the ledger keeps them apart
 
 A **claim** is an external assertion that an award was cancelled — currently only DOGE makes them. The claim is the thing being tracked, so it is retained permanently and is never pruned, whether or not the award turned out to be genuinely terminated. Claims are captured in `Claiming Source`, `Claimed Status`, `Claimed Savings`, and `Claim Date`. These are **write-once**: a later snapshot in which a different source flags the award cannot erase them. When a source restates a claim, the change is appended to `Claim Revisions` rather than overwriting the original assertion.
 
-An **outcome** is what the award data actually shows happened since: `Amount Trend`, `End Date Trend`, and `Claim Divergence` (`claimed_but_grew`, `claimed_but_extended`, `claimed_and_shrank`, `consistent`). These are derived on every build from the first and latest observed values. `claimed_but_grew` is the notable case — an award whose claimed savings is contradicted by the award subsequently growing.
+An **outcome** is what the award data actually shows happened since: `Amount Trend`, `End Date Trend`, and `Claim Divergence` (`claimed_but_grew`, `claimed_but_extended`, `claimed_and_shrank`, `consistent`). These are derived on every build from the first and latest observed values. When an award was first observed on a zero-dollar action, `Transaction Baseline Amount` supplies the maximum cumulative obligation from its complete USAspending transaction history without overwriting `First Award Amount`; an incomplete or nonnumeric history is marked `unknown`. A computed zero also leaves the trend `unknown` because percentage change from zero is undefined. For IDV vehicles, `End Date` uses USAspending's `Last Date to Order` when the generic period end is absent. `claimed_but_grew` is the notable case — an award whose claimed savings is contradicted by the award subsequently growing.
 
 Divergence is a comparison, not a judgement. A claimed award that grew is still reported.
 
@@ -42,7 +42,7 @@ Divergence is a comparison, not a judgement. A claimed award that grew is still 
 
 The daily snapshots cannot establish whether an award is _still_ cancelled: when a closeout modification replaces the termination language, the award leaves the snapshot that same day, so the closeout is never recorded anywhere. Only the USAspending transaction history resolves this.
 
-`reverify_awards.py` walks each award's transactions and decides whether a termination stands, was superseded by a closeout, or was reversed. It runs weekly via `.github/workflows/reverify.yml`.
+`reverify_awards.py` walks each award's transactions and decides whether a termination stands, was superseded by a closeout, or was reversed. The same complete history supplies `Transaction Baseline Amount` for zero-dollar first observations. It runs weekly via `.github/workflows/reverify.yml`.
 
 Two invariants:
 

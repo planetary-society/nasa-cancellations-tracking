@@ -53,6 +53,7 @@ from collections import Counter
 
 from contract_query import load_snapshot
 from termination_vocabulary import is_cause, is_reversal, is_vacatur
+from utils import canonical_usaspending_url
 
 CONSOLIDATED_DIR = "consolidated"
 LEDGER_PATH = os.path.join(CONSOLIDATED_DIR, "master_ledger.csv")
@@ -138,6 +139,7 @@ LEDGER_COLUMNS = [
     "Claim Date",
     "Claim Revisions",
     "First Award Amount",
+    "Transaction Baseline Amount",
     "First End Date",
     "Amount Trend",
     "End Date Trend",
@@ -319,9 +321,15 @@ def derive_trends(rec):
     award since we started tracking it", independent of whether a source still
     flags it.
     """
-    first, latest = (
+    observed_first, latest = (
         _amount(rec.get("First Award Amount")),
         _amount(rec.get("Award Amount")),
+    )
+    baseline = _amount(rec.get("Transaction Baseline Amount"))
+    first = (
+        baseline
+        if (observed_first is None or observed_first == 0) and baseline is not None
+        else observed_first
     )
     if first is None or latest is None or first == 0:
         rec["Amount Trend"] = "unknown"
@@ -587,6 +595,9 @@ def build(update_only=False):
         # is how a false positive still in the daily snapshot becomes visible.
         rec["Auto Status"] = auto.get(aid, {}).get("Auto Status", "")
         rec["Auto Verified Date"] = auto.get(aid, {}).get("Verified Date", "")
+        rec["Transaction Baseline Amount"] = auto.get(aid, {}).get(
+            "Transaction Baseline Amount", ""
+        )
 
         if aid in latest:
             rec["Status"], rec["Status Detail"] = "listed", ""
@@ -603,6 +614,7 @@ def build(update_only=False):
         # reads the *snapshot* row, so stripping here cannot starve it, and the
         # archived snapshots keep the original prose either way.
         rec["Description"] = strip_claim_prefix(rec.get("Description"))
+        rec["URL"] = canonical_usaspending_url(rec.get("URL"))
         derive_trends(rec)
 
     rows = sorted(

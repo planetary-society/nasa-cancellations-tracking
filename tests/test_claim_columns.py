@@ -4,6 +4,7 @@ import csv
 
 
 import build_master_ledger as bml
+import reverify_awards
 
 COLS = [
     "Source",
@@ -148,6 +149,52 @@ def test_claim_captured_from_real_columns_not_only_prose(workdir):
     x = ledger()["X-1"]
     assert x["Claimed Status"] == "Expired"
     assert x["Claimed Savings"] == "50000.00"  # normalized on the column path too
+
+
+def test_build_canonicalizes_a_legacy_nasa_assistance_url(workdir):
+    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    legacy = row(
+        "80NSSC22M0122",
+        "NASAGrants",
+        "Administrative - Decrease",
+        URL=("https://www.usaspending.gov/award/ASST_NON_80NSSC22M0122_8000/"),
+    )
+    write_snap("consolidated/nasa_x_2026-01-01.csv", [keep, legacy])
+
+    bml.build()
+
+    assert ledger()["80NSSC22M0122"]["URL"].endswith("/ASST_NON_80NSSC22M0122_080/")
+
+
+def test_build_uses_auto_transaction_baseline_for_a_zero_snapshot_amount(workdir):
+    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    claimed = row(
+        "A-0",
+        "DOGE",
+        DOGE_DESC,
+        **{"Award Amount": "0.00"},
+    )
+    write_snap("consolidated/nasa_x_2026-01-01.csv", [keep, claimed])
+
+    auto = {column: "" for column in reverify_awards.AUTO_COLUMNS}
+    auto.update(
+        {
+            "Award ID": "A-0",
+            "Transaction Baseline Amount": "44325.00",
+        }
+    )
+    with open(bml.AUTO_VERIFICATION_PATH, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=reverify_awards.AUTO_COLUMNS)
+        writer.writeheader()
+        writer.writerow(auto)
+
+    bml.build()
+
+    result = ledger()["A-0"]
+    assert result["First Award Amount"] == "0.00"
+    assert result["Transaction Baseline Amount"] == "44325.00"
+    assert result["Amount Trend"] == "shrank"
+    assert result["Claim Divergence"] == "claimed_and_shrank"
 
 
 def test_restatement_is_logged_not_overwritten(workdir):

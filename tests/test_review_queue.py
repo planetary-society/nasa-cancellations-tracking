@@ -38,8 +38,17 @@ def test_search_closes_usaspending_client_when_source_fails(monkeypatch):
 class FakeAward:
     """Minimal stand-in for a usaspending Award."""
 
-    def __init__(self, award_id):
+    def __init__(
+        self,
+        award_id,
+        *,
+        category="contract",
+        end_date="2026-12-31",
+        last_date_to_order=None,
+    ):
         self.award_identifier = award_id
+        self.category = category
+        self.raw = {"Last Date to Order": last_date_to_order}
         self.usa_spending_url = (
             f"https://www.usaspending.gov/award/CONT_AWD_{award_id}/"
         )
@@ -53,7 +62,7 @@ class FakeAward:
             {
                 "last_modified_date": "2026-01-01",
                 "start_date": "2025-01-01",
-                "end_date": "2026-12-31",
+                "end_date": end_date,
             },
         )()
         self.recipient = type(
@@ -103,6 +112,77 @@ def test_resolvable_award_is_not_flagged():
     assert "A-1" in obj.unique_cancellations
 
 
+def test_idv_last_date_to_order_fills_a_missing_period_end():
+    award = FakeAward(
+        "80KSC020D0016",
+        category="idv",
+        end_date=None,
+        last_date_to_order="2025-09-24",
+    )
+    obj = make_search(
+        {"USAspendingTerminations": [row("80KSC020D0016")]},
+        [award],
+    )
+
+    assert obj.unique_cancellations["80KSC020D0016"]["End Date"] == "2025-09-24"
+
+
+def test_idv_snake_case_last_date_to_order_is_also_supported():
+    award = FakeAward("IDV-1", category="idv", end_date=None)
+    award.raw = {"last_date_to_order": "2025-09-24"}
+    obj = make_search({"USAspendingTerminations": [row("IDV-1")]}, [award])
+
+    assert obj.unique_cancellations["IDV-1"]["End Date"] == "2025-09-24"
+
+
+def test_idv_period_end_remains_authoritative_when_present():
+    award = FakeAward(
+        "IDV-1",
+        category="idv",
+        end_date="2026-12-31",
+        last_date_to_order="2025-09-24",
+    )
+    obj = make_search({"USAspendingTerminations": [row("IDV-1")]}, [award])
+
+    assert obj.unique_cancellations["IDV-1"]["End Date"] == "2026-12-31"
+
+
+def test_non_idv_never_uses_last_date_to_order():
+    award = FakeAward(
+        "CONTRACT-1",
+        category="contract",
+        end_date=None,
+        last_date_to_order="2025-09-24",
+    )
+    obj = make_search({"USAspendingTerminations": [row("CONTRACT-1")]}, [award])
+
+    assert obj.unique_cancellations["CONTRACT-1"]["End Date"] == ""
+
+
+def test_search_publishes_the_canonical_nasa_assistance_url():
+    award = FakeAward("80NSSC22M0122", category="grant")
+    award.usa_spending_url = (
+        "https://www.usaspending.gov/award/ASST_NON_80NSSC22M0122_8000/"
+    )
+
+    obj = make_search({"NASAGrants": [row("80NSSC22M0122")]}, [award])
+
+    assert obj.unique_cancellations["80NSSC22M0122"]["URL"].endswith(
+        "/ASST_NON_80NSSC22M0122_080/"
+    )
+
+
+def test_source_description_normalizes_carriage_returns():
+    obj = make_search(
+        {"DOGE": [row("A-1", "first line\r  second line  ")]},
+        [FakeAward("A-1")],
+    )
+
+    assert obj.unique_cancellations["A-1"]["Description"] == (
+        "first line\n  second line  "
+    )
+
+
 def test_unresolvable_award_is_recorded_with_its_source():
     """The real case: a DOGE grant id in generated-id form matches nothing."""
     obj = make_search({"DOGE": [row("ASST_NON_80NSSC24K0913_8000")]}, [])
@@ -136,6 +216,29 @@ def test_generated_id_yields_the_fain():
     assert extract("ASST_NON_80NSSC24K0913_8000") == "80NSSC24K0913"
     assert extract("ASST_AGG_1234ABC_8000") == "1234ABC"
     assert extract("CONT_AWD_80MSFC22CA005_8000_-NONE-_-NONE-") == "80MSFC22CA005"
+
+
+def test_legacy_nasa_assistance_generated_id_is_canonicalized():
+    import utils
+
+    assert (
+        utils.canonical_generated_award_id("ASST_NON_80NSSC22M0122_8000")
+        == "ASST_NON_80NSSC22M0122_080"
+    )
+    assert (
+        utils.canonical_generated_award_id("ASST_AGG_NNX12AB34_8000")
+        == "ASST_AGG_NNX12AB34_080"
+    )
+    assert (
+        utils.canonical_generated_award_id(
+            "CONT_AWD_80NSSC25FA315_8000_80NSSC24AA005_8000"
+        )
+        == "CONT_AWD_80NSSC25FA315_8000_80NSSC24AA005_8000"
+    )
+    assert (
+        utils.canonical_generated_award_id("ASST_NON_OTHERAGENCY123_8000")
+        == "ASST_NON_OTHERAGENCY123_8000"
+    )
 
 
 def test_plain_ids_pass_through_untouched():

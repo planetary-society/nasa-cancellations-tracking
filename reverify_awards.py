@@ -53,6 +53,7 @@ from build_master_ledger import (
     load_auto_verification,
 )
 from contract_query import load_snapshot
+from utils import canonical_generated_award_id
 from termination_vocabulary import (
     CLOSEOUT_TEXT,
     is_cause,
@@ -77,6 +78,7 @@ AUTO_COLUMNS = [
     "Latest Mod",
     "Latest Mod Date",
     "Post-Term Obligations",
+    "Transaction Baseline Amount",
     "Transaction Count",
     "Disagrees With Human",
     "Last Attempt Date",
@@ -99,8 +101,9 @@ RUN_LOG_COLUMNS = [
 # output file is left untouched rather than half-refreshed.
 MAX_UNRESOLVED_SHARE = 0.25
 
-# USAspending caps a transactions page at 5000; hitting it means we silently
-# truncated the history and must not judge on a partial record.
+# USAspending caps each transactions page at 5000. The ORM's ``all()`` follows
+# ``hasNext`` until every page has been fetched, so this controls request size
+# without limiting the complete history.
 PAGE_SIZE = 5000
 
 # --- Action type vocabularies -------------------------------------------
@@ -181,7 +184,7 @@ def render_signals(signals):
 def generated_id(ledger_row):
     """Pull the USAspending generated award id out of the ledger URL column."""
     m = re.search(r"/award/([^/]+)/?", ledger_row.get("URL") or "")
-    return m.group(1) if m else ""
+    return canonical_generated_award_id(m.group(1)) if m else ""
 
 
 def _text(txn):
@@ -204,10 +207,39 @@ def _obligation(txn):
 
 
 def _sort_key(txn):
+    modification = str(getattr(txn, "modification_number", "") or "")
+    natural_modification = tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in re.split(r"(\d+)", modification)
+        if part
+    )
     return (
         str(getattr(txn, "action_date", "") or ""),
-        str(getattr(txn, "modification_number", "") or ""),
+        natural_modification,
     )
+
+
+def transaction_baseline_amount(txns):
+    """Return the highest cumulative obligation in a complete transaction history.
+
+    Awards first observed on a zero-dollar administrative or termination
+    action have no useful snapshot baseline. The transaction history preserves
+    the sequence of obligation changes, so its maximum cumulative balance is a
+    source-backed comparison point. Refuse partial or non-numeric histories
+    rather than silently treating missing obligations as zero.
+    """
+    if not txns:
+        return None
+
+    balance = 0.0
+    maximum = 0.0
+    for txn in sorted(txns, key=_sort_key):
+        obligation = _obligation(txn)
+        if obligation is None:
+            return None
+        balance += obligation
+        maximum = max(maximum, balance)
+    return maximum
 
 
 def _kind(txn, is_contract):
@@ -238,15 +270,6 @@ def classify_transactions(txns, *, is_contract, ledger_row):
             "No transactions returned for this award; cannot judge.",
             {"reason": "no_transactions"},
         )
-    if len(txns) >= PAGE_SIZE:
-        return Verdict(
-            "unresolved",
-            "none",
-            f"Transaction history hit the {PAGE_SIZE}-row page cap; "
-            f"record may be truncated.",
-            {"reason": "pagination_overflow"},
-        )
-
     txns = sorted(txns, key=_sort_key)
     kinds = [_kind(t, is_contract) for t in txns]
 
@@ -427,11 +450,31 @@ def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):
     for aid, rec in ledger.items():
         status = rec.get("Status", "")
         prev = previous.get(aid, {})
-        if status == "excluded_by_design" and not include_excluded:
+        first_amount = str(rec.get("First Award Amount") or "")
+        try:
+            first_amount = float(first_amount.replace("$", "").replace(",", ""))
+        except ValueError:
+            first_amount = None
+        # Blank means not yet attempted. A successful lookup whose history
+        # cannot yield a numeric baseline stores the explicit `unknown`
+        # sentinel, avoiding a permanent retry loop while still allowing
+        # bounded migration runs to pick up untouched rows on the next pass.
+        baseline_missing = not prev.get("Transaction Baseline Amount")
+        needs_baseline = (
+            first_amount is None or first_amount == 0
+        ) and baseline_missing
+
+        if (
+            status == "excluded_by_design"
+            and not include_excluded
+            and not needs_baseline
+        ):
             tiers["skipped_excluded"] += 1
             continue
 
-        if prev.get("Auto Status") == "unresolved" or prev.get("Last Error"):
+        if needs_baseline:
+            tier, window = "0_baseline_backfill", 0
+        elif prev.get("Auto Status") == "unresolved" or prev.get("Last Error"):
             tier, window = "0_retry", 0
         elif status in ("dropped_pending_review", "source_retired"):
             tier, window = "1_unverified", 0
@@ -457,6 +500,10 @@ def fetch_transactions(client, gid):
         client.transactions.award_id(gid)
         .order_by("action_date", "asc")
         .page_size(PAGE_SIZE)
+        # The ORM otherwise applies its global 10,000-row safety default.
+        # An explicit bound bypasses that default while `hasNext` still ends
+        # the query at the API's actual final page.
+        .limit(sys.maxsize)
         .all()
     )
 
@@ -483,6 +530,10 @@ def build_row(aid, rec, verdict, txns, previous, human, *, today, ok):
     row["Last Success Date"] = today
     row["Attempt Count"] = "0"
     row["Transaction Count"] = str(len(txns))
+    baseline = transaction_baseline_amount(txns)
+    row["Transaction Baseline Amount"] = (
+        f"{baseline:.2f}" if baseline is not None else "unknown"
+    )
     if txns:
         latest = max(txns, key=_sort_key)
         row["Latest Mod"] = str(getattr(latest, "modification_number", "") or "")

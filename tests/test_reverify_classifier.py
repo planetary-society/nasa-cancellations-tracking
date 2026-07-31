@@ -8,11 +8,14 @@ confidence.
 
 import csv
 import os
+import sys
+from datetime import date
 
 import pytest
 
+import reverify_awards
 from tests.helpers import FakeTxn
-from reverify_awards import classify_transactions, PAGE_SIZE
+from reverify_awards import classify_transactions, generated_id, PAGE_SIZE
 
 LEDGER_ROW = {"End Date": "2030-01-01"}
 
@@ -37,11 +40,264 @@ def test_empty_history_is_unresolved_never_a_verdict():
     assert v.confidence == "none"
 
 
-def test_page_cap_is_unresolved():
+def test_generated_id_canonicalizes_a_legacy_nasa_assistance_url():
+    assert (
+        generated_id(
+            {"URL": "https://www.usaspending.gov/award/ASST_NON_80NSSC22M0122_8000/"}
+        )
+        == "ASST_NON_80NSSC22M0122_080"
+    )
+
+
+def test_full_first_page_is_not_mistaken_for_truncated_history():
     txns = [
         FakeTxn(f"2025-01-{i % 28 + 1:02d}", action_type="A") for i in range(PAGE_SIZE)
     ]
-    assert classify(txns).status == "unresolved"
+    assert classify(txns).status == "no_termination_signal"
+
+
+def test_fetch_transactions_disables_the_orm_default_result_cap():
+    class Query:
+        def __init__(self):
+            self.explicit_limit = None
+
+        def award_id(self, _award_id):
+            return self
+
+        def order_by(self, _field, _direction):
+            return self
+
+        def page_size(self, size):
+            assert size == PAGE_SIZE
+            return self
+
+        def limit(self, size):
+            self.explicit_limit = size
+            return self
+
+        def all(self):
+            return []
+
+    query = Query()
+    client = type("Client", (), {"transactions": query})()
+
+    assert reverify_awards.fetch_transactions(client, "CONT_AWD_1") == []
+    assert query.explicit_limit == sys.maxsize
+
+
+# --- transaction-derived amount baseline ----------------------------------
+
+
+def test_transaction_baseline_is_the_maximum_cumulative_obligation():
+    txns = [
+        FakeTxn("2024-01-01", federal_action_obligation=28832.0),
+        FakeTxn("2025-05-01", federal_action_obligation=-28832.0),
+    ]
+
+    assert reverify_awards.transaction_baseline_amount(txns) == 28832.0
+
+
+def test_same_day_numeric_modifications_use_natural_sequence_for_baseline():
+    txns = [
+        FakeTxn(
+            "2024-01-01",
+            modification_number="2",
+            federal_action_obligation=100.0,
+        ),
+        FakeTxn(
+            "2024-01-01",
+            modification_number="10",
+            federal_action_obligation=-100.0,
+        ),
+    ]
+
+    assert reverify_awards.transaction_baseline_amount(txns) == 100.0
+
+
+def test_same_day_numeric_modifications_use_natural_sequence_for_verdict():
+    txns = [
+        FakeTxn(
+            "2025-01-01",
+            modification_number="2",
+            action_type="F",
+            federal_action_obligation=-100.0,
+        ),
+        FakeTxn(
+            "2025-01-01",
+            modification_number="10",
+            action_type="C",
+            federal_action_obligation=100.0,
+        ),
+    ]
+
+    assert classify(txns).status == "continued"
+
+
+def test_transaction_baseline_requires_a_complete_numeric_history():
+    assert reverify_awards.transaction_baseline_amount([]) is None
+    assert (
+        reverify_awards.transaction_baseline_amount(
+            [
+                FakeTxn("2024-01-01", federal_action_obligation=100.0),
+                FakeTxn("2025-01-01", federal_action_obligation=None),
+            ]
+        )
+        is None
+    )
+
+
+def test_zero_first_amount_is_selected_once_for_baseline_backfill():
+    ledger = {
+        "80NSSC25FA315": {
+            "First Award Amount": "0",
+            "Status": "listed",
+            "Claiming Source": "",
+        }
+    }
+    selected, tiers = reverify_awards.select_awards(
+        ledger, {}, stale_days=30, include_excluded=False
+    )
+
+    assert selected == ["80NSSC25FA315"]
+    assert tiers == {"0_baseline_backfill": 1}
+
+
+def test_excluded_award_is_still_selected_for_baseline_backfill():
+    aid = "80LARC19F0127"
+    ledger = {
+        aid: {
+            "First Award Amount": "0.00",
+            "Status": "excluded_by_design",
+            "Claiming Source": "",
+        }
+    }
+
+    selected, tiers = reverify_awards.select_awards(
+        ledger, {}, stale_days=30, include_excluded=False
+    )
+
+    assert selected == [aid]
+    assert tiers == {"0_baseline_backfill": 1}
+
+
+def test_blank_baseline_from_a_bounded_migration_remains_selected():
+    aid = "UNPROCESSED-1"
+    ledger = {
+        aid: {
+            "First Award Amount": "0",
+            "Status": "listed",
+            "Claiming Source": "",
+        }
+    }
+    previous = {
+        aid: {
+            "Transaction Baseline Amount": "",
+            "Last Success Date": date.today().isoformat(),
+        }
+    }
+
+    selected, tiers = reverify_awards.select_awards(
+        ledger, previous, stale_days=30, include_excluded=False
+    )
+
+    assert selected == [aid]
+    assert tiers == {"0_baseline_backfill": 1}
+
+
+def test_computed_zero_baseline_is_not_selected_again_while_fresh():
+    aid = "ZERO-1"
+    ledger = {
+        aid: {
+            "First Award Amount": "0",
+            "Status": "listed",
+            "Claiming Source": "",
+        }
+    }
+    previous = {
+        aid: {
+            "Transaction Baseline Amount": "0.00",
+            "Last Success Date": date.today().isoformat(),
+        }
+    }
+
+    selected, tiers = reverify_awards.select_awards(
+        ledger, previous, stale_days=30, include_excluded=False
+    )
+
+    assert selected == []
+    assert tiers == {"skipped_fresh": 1}
+
+
+def test_attempted_unknown_baseline_is_not_selected_again_while_fresh():
+    aid = "UNKNOWN-1"
+    ledger = {
+        aid: {
+            "First Award Amount": "0",
+            "Status": "listed",
+            "Claiming Source": "",
+        }
+    }
+    previous = {
+        aid: {
+            "Transaction Baseline Amount": "unknown",
+            "Last Success Date": date.today().isoformat(),
+        }
+    }
+
+    selected, tiers = reverify_awards.select_awards(
+        ledger, previous, stale_days=30, include_excluded=False
+    )
+
+    assert selected == []
+    assert tiers == {"skipped_fresh": 1}
+
+
+def test_successful_reverification_stores_the_transaction_baseline():
+    aid = "80NSSC24PC475"
+    rec = {
+        "URL": (
+            "https://www.usaspending.gov/award/"
+            "CONT_AWD_80NSSC24PC475_8000_80NSSC24AA005_8000/"
+        )
+    }
+    txns = [
+        FakeTxn("2024-01-01", federal_action_obligation=44325.0),
+        FakeTxn("2024-02-01", federal_action_obligation=0.0),
+        FakeTxn("2025-01-01", federal_action_obligation=-44325.0),
+    ]
+    verdict = reverify_awards.Verdict("still_terminated", "low", "transaction fixture")
+
+    row = reverify_awards.build_row(
+        aid,
+        rec,
+        verdict,
+        txns,
+        {},
+        {},
+        today="2026-07-30",
+        ok=True,
+    )
+
+    assert row["Transaction Baseline Amount"] == "44325.00"
+
+
+def test_successful_incomplete_history_stores_an_unknown_baseline_sentinel():
+    aid = "UNKNOWN-1"
+    verdict = reverify_awards.Verdict(
+        "needs_manual_review", "none", "transaction fixture"
+    )
+    row = reverify_awards.build_row(
+        aid,
+        {"URL": f"https://www.usaspending.gov/award/CONT_AWD_{aid}/"},
+        verdict,
+        [FakeTxn("2025-01-01", federal_action_obligation=None)],
+        {},
+        {},
+        today="2026-07-30",
+        ok=True,
+    )
+
+    assert row["Transaction Baseline Amount"] == "unknown"
 
 
 # --- termination for cause -------------------------------------------------
