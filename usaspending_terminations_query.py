@@ -45,7 +45,7 @@ import pandas as pd
 from usaspending import Award, Transaction, TransactionsSearch, USASpendingClient
 
 from contract_query import ContractQuery, FINAL_COLUMNS
-from termination_vocabulary import is_cause
+from termination_vocabulary import is_cause, is_reversal, is_vacatur
 
 # Plain strings sent to the API as `filters.keywords`; they cannot be regexes.
 # The narrow classification patterns live in termination_vocabulary.py.
@@ -587,6 +587,20 @@ class USASpendingTerminationsQuery(ContractQuery):
 
         records = []
         for aid, (row, clawback_hit) in best.items():
+            # An award whose WINNING (latest) transaction reverses the
+            # termination is not currently cancelled - but its older
+            # termination mods keep matching this full-window sweep forever,
+            # and a rescission's own text ("RESCINDING STOP WORK NOTICE")
+            # matches the keyword sweep too. Parity with the mirror source,
+            # which shipped this rule first: judged on the winning row only,
+            # so a re-termination after a rescission still surfaces, and the
+            # reversal row must COMPETE in the dedupe above rather than be
+            # skipped there - skipping at insert would let the older
+            # termination row win and keep the award listed.
+            desc = (row.raw.get("Transaction Description") or "").strip()
+            if is_reversal(desc) or is_vacatur(desc):
+                continue
+
             gid = row.generated_unique_award_id or ""
             action_date = row.action_date.isoformat() if row.action_date else ""
             if clawback_hit is not None:

@@ -659,6 +659,56 @@ def test_termination_for_cause_still_excluded(stub):
     assert df.empty
 
 
+def test_a_rescinded_award_is_not_resurfaced(stub):
+    """Parity with the mirror source, which shipped this rule first: the
+    full-window sweep re-reports old termination mods forever, and the
+    rescission's own text matches "stop work" - so without the winning-row
+    reversal check a reinstated award re-enters the snapshot daily and the
+    ledger can never say `reinstated` again."""
+    stop = txn("A-1", "P00002", "M", "Stop work order issued", "2025-04-25")
+    rescission = txn(
+        "A-1", "P00003", "M", "RESCINDING STOP WORK NOTICE. TAURUS", "2025-06-27"
+    )
+
+    df = stub({"stop work": [stop, rescission]}, []).search()
+
+    assert df.empty
+
+
+def test_a_vacated_termination_is_not_resurfaced(stub):
+    """Same rule for the court-ordered flavor of reversal."""
+    vacatur = txn(
+        "A-1",
+        "P00006",
+        "M",
+        "The termination for convenience has been vacated and set aside "
+        "pursuant to the order",
+        "2025-09-03",
+    )
+
+    df = stub({"termination for convenience": [vacatur]}, []).search()
+
+    assert df.empty
+
+
+def test_a_retermination_after_a_rescission_still_surfaces(stub):
+    """The reversal is judged on the WINNING row only. The reversal row must
+    compete in the dedupe rather than be skipped at insert - skipping there
+    would let the older termination row win and keep a reinstated award
+    listed; and a genuine re-termination later must still surface."""
+    rescission = txn(
+        "A-1", "P00003", "M", "RESCINDING STOP WORK NOTICE. TAURUS", "2025-06-27"
+    )
+    reterminated = txn(
+        "A-1", "P00009", "F", "TERMINATE FOR CONVENIENCE - FULL", "2026-02-01"
+    )
+
+    df = stub({"stop work": [rescission]}, [reterminated]).search()
+
+    assert list(df["Award ID"]) == ["A-1"]
+    assert "P00009" in df.iloc[0]["status"]
+
+
 def test_default_and_cause_action_codes_are_excluded(stub):
     default = txn("A-E", "P00001", "E", "PROJECT WORK")
     cause = txn("A-X", "P00002", "X", "PROJECT WORK")
