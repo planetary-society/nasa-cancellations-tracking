@@ -255,6 +255,10 @@ WHERE action_date >= '{TRACKING_WINDOW_START}'
 ORDER BY days_truncated DESC
 """
 
+# TODO: Implement the Initial Reported End Date provider against
+# rpt.transaction_search and prefer it over public download jobs when mirror
+# access is restored, preserving the same selection and provenance contract.
+
 Q4_PURE_CLAWBACKS = f"""
 -- Grants killed by money removal alone: no termination language, no date
 -- truncation, no action code that means anything. Q1-Q3 cannot see these by

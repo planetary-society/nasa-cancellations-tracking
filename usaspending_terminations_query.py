@@ -34,12 +34,15 @@ distinguish "no terminations" from "source down" (fail-loud policy adopted
 after the FPDS silent failure).
 """
 
+import csv
+import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from itertools import islice
-from typing import List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 import pandas as pd
 from usaspending import Award, Transaction, TransactionsSearch, USASpendingClient
@@ -82,6 +85,41 @@ CLAWBACK_AMOUNT_THRESHOLD = Decimal("-10000")
 CLAWBACK_FRACTION_THRESHOLD = Decimal("0.25")
 SAME_ACTION_END_REWRITE_LAG = timedelta(days=1)
 
+# The compact transaction-history endpoint omits period-of-performance dates.
+# The search-download endpoint returns the underlying transaction rows, so it
+# is the public, mirror-free source for an award's earliest reported end date.
+INITIAL_END_DATE_START = "2007-10-01"
+INITIAL_END_DATE_DOWNLOAD_TIMEOUT = 1800
+INITIAL_END_DATE_POLL_INTERVAL = 5
+
+INITIAL_END_DATE_CATEGORIES = {
+    "contract": "contracts",
+    "idv": "idvs",
+    "assistance": "grants",
+}
+
+_MOD_NUMBER_PARTS = re.compile(r"(\d+)")
+_ZERO_MODIFICATION = re.compile(r"0+")
+
+_AWARD_ID_FIELDS = (
+    "award_id_piid",
+    "award_id_fain",
+    "award_id_uri",
+    "award_id",
+)
+_TRANSACTION_ID_FIELDS = (
+    "contract_transaction_unique_key",
+    "assistance_transaction_unique_key",
+    "idv_transaction_unique_key",
+    "transaction_unique_key",
+    "transaction_id",
+)
+_END_DATE_FIELDS = ("period_of_performance_current_end_date",)
+_IDV_END_DATE_FIELDS = (
+    "last_date_to_order",
+    "period_of_performance_current_end_date",
+)
+
 NASA_AGENCY_FILTER = [
     {
         "type": "awarding",
@@ -98,6 +136,252 @@ class ClawbackHit:
     transaction: Transaction
     fraction: Decimal
     pre_clawback_total: Decimal
+
+
+@dataclass(frozen=True)
+class InitialEndDateTarget:
+    """One award whose transaction download should be inspected."""
+
+    award_id: str
+    generated_award_id: str
+    category: str
+    lookup_award_id: str = ""
+
+    @property
+    def native_award_id(self) -> str:
+        """PIID/FAIN used by search-download filters and transaction CSVs."""
+        return self.lookup_award_id or self.award_id
+
+
+@dataclass(frozen=True)
+class InitialEndDateResult:
+    """The earliest reported end date and the transaction that supplied it."""
+
+    award_id: str
+    generated_award_id: str
+    category: str
+    initial_end_date: str
+    transaction_id: str
+    action_date: str
+    modification_number: str
+    basis: str
+    status: str
+
+
+def initial_end_date_category(generated_award_id: str) -> str:
+    """Map a USAspending generated award id to its download category."""
+    gid = (generated_award_id or "").upper()
+    if gid.startswith("CONT_AWD_"):
+        return "contract"
+    if gid.startswith("CONT_IDV_"):
+        return "idv"
+    if gid.startswith("ASST_NON_"):
+        return "assistance"
+    return ""
+
+
+def _header_key(value: str) -> str:
+    """Canonicalise either raw download headers or display-name headers."""
+    return re.sub(r"[^a-z0-9]+", "_", (value or "").lstrip("\ufeff").lower()).strip(
+        "_"
+    )
+
+
+def _first_value(row: dict, fields: Sequence[str]) -> str:
+    for field in fields:
+        value = row.get(field)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _iso_date(value: str, field: str) -> str:
+    """Return YYYY-MM-DD for an ISO date/datetime, failing on malformed data."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    candidate = text[:10]
+    try:
+        return date.fromisoformat(candidate).isoformat()
+    except ValueError as exc:
+        raise RuntimeError(f"USAspending download returned invalid {field}: {text!r}") from exc
+
+
+def _natural_modification_key(value: str) -> tuple:
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in _MOD_NUMBER_PARTS.split(str(value or ""))
+        if part
+    )
+
+
+def _download_row_sort_key(row: dict) -> tuple:
+    return (
+        _iso_date(row.get("action_date", ""), "action_date"),
+        _natural_modification_key(row.get("modification_number", "")),
+        row.get("transaction_id", ""),
+    )
+
+
+def select_initial_reported_end_date(
+    target: InitialEndDateTarget, rows: Sequence[dict]
+) -> InitialEndDateResult:
+    """Select a base-transaction date, else the earliest nonblank reported date."""
+    if not rows:
+        raise RuntimeError(
+            f"USAspending transaction download omitted award {target.award_id!r}"
+        )
+
+    ordered = sorted(rows, key=_download_row_sort_key)
+    dated = []
+    for row in ordered:
+        end_date = _iso_date(row.get("end_date", ""), "end_date")
+        if end_date:
+            dated.append((row, end_date))
+
+    if not dated:
+        return InitialEndDateResult(
+            target.award_id,
+            target.generated_award_id,
+            target.category,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "no_reported_end_date",
+        )
+
+    base = [
+        item
+        for item in dated
+        if _ZERO_MODIFICATION.fullmatch(
+            str(item[0].get("modification_number", "") or "").strip()
+        )
+    ]
+    row, end_date = base[0] if base else dated[0]
+    return InitialEndDateResult(
+        target.award_id,
+        target.generated_award_id,
+        target.category,
+        end_date,
+        row.get("transaction_id", ""),
+        _iso_date(row.get("action_date", ""), "action_date"),
+        row.get("modification_number", ""),
+        "base_transaction" if base else "earliest_nonblank",
+        "resolved",
+    )
+
+
+def _transaction_download_rows(
+    files: Iterable[str], category: str, expected_award_ids: set[str]
+) -> dict[str, list[dict]]:
+    """Read transaction CSVs from one completed USAspending download job."""
+    expected = {award_id.casefold(): award_id for award_id in expected_award_ids}
+    by_award = {award_id: [] for award_id in expected_award_ids}
+    found_transaction_csv = False
+
+    for path in files:
+        if not str(path).lower().endswith(".csv"):
+            continue
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            reader = csv.DictReader(fh)
+            headers = {_header_key(name) for name in (reader.fieldnames or [])}
+            end_fields = _IDV_END_DATE_FIELDS if category == "idv" else _END_DATE_FIELDS
+            required_groups = (
+                _AWARD_ID_FIELDS,
+                _TRANSACTION_ID_FIELDS,
+                ("action_date",),
+                ("modification_number",),
+                end_fields,
+            )
+            if not all(any(field in headers for field in group) for group in required_groups):
+                continue
+
+            found_transaction_csv = True
+            for raw in reader:
+                row = {_header_key(key): value for key, value in raw.items() if key}
+                downloaded_id = _first_value(row, _AWARD_ID_FIELDS)
+                award_id = expected.get(downloaded_id.casefold())
+                if not award_id:
+                    continue
+                by_award[award_id].append(
+                    {
+                        "transaction_id": _first_value(row, _TRANSACTION_ID_FIELDS),
+                        "action_date": _first_value(row, ("action_date",)),
+                        "modification_number": _first_value(
+                            row, ("modification_number",)
+                        ),
+                        "end_date": _first_value(row, end_fields),
+                    }
+                )
+
+    if not found_transaction_csv:
+        raise RuntimeError(
+            f"USAspending {category} download contained no transaction CSV with "
+            "award, transaction, action-date, modification, and end-date columns"
+        )
+    missing = sorted(award_id for award_id, rows in by_award.items() if not rows)
+    if missing:
+        raise RuntimeError(
+            f"USAspending {category} download omitted requested award(s): "
+            f"{', '.join(missing)}"
+        )
+    return by_award
+
+
+def fetch_initial_reported_end_dates(
+    client: USASpendingClient,
+    targets: Sequence[InitialEndDateTarget],
+    *,
+    end_date: Optional[str] = None,
+) -> List[InitialEndDateResult]:
+    """Batch-download transaction histories and derive one result per target."""
+    grouped = {category: [] for category in INITIAL_END_DATE_CATEGORIES}
+    for target in targets:
+        if target.category not in grouped:
+            raise ValueError(f"Unsupported award category: {target.category!r}")
+        grouped[target.category].append(target)
+
+    results = []
+    through = end_date or date.today().isoformat()
+    with tempfile.TemporaryDirectory(prefix="initial-end-dates-") as destination:
+        for category, category_targets in grouped.items():
+            if not category_targets:
+                continue
+            query = client.awards.search()
+            query = getattr(query, INITIAL_END_DATE_CATEGORIES[category])()
+            # Although the API contract documents quoted award ids as its
+            # exact-match syntax, the production download worker currently
+            # fails every job carrying those quotes (validated 2026-07-31).
+            # Send the native ids unquoted and enforce exactness while parsing
+            # the CSV: unrelated fuzzy matches are ignored and a missing exact
+            # id aborts the batch below.
+            query = query.award_ids(
+                *(target.native_award_id for target in category_targets)
+            ).time_period(INITIAL_END_DATE_START, through)
+            job = client.downloads.search(
+                query,
+                spending_level=["transactions"],
+                destination_dir=destination,
+            )
+            files = job.wait_for_completion(
+                timeout=INITIAL_END_DATE_DOWNLOAD_TIMEOUT,
+                poll_interval=INITIAL_END_DATE_POLL_INTERVAL,
+                cleanup_zip=True,
+            )
+            rows_by_award = _transaction_download_rows(
+                files,
+                category,
+                {target.native_award_id for target in category_targets},
+            )
+            results.extend(
+                select_initial_reported_end_date(
+                    target, rows_by_award[target.native_award_id]
+                )
+                for target in category_targets
+            )
+    return results
 
 
 class USASpendingTerminationsQuery(ContractQuery):

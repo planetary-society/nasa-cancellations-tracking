@@ -3,12 +3,20 @@ from datetime import datetime
 from typing import List, Dict
 import csv
 import os
+import shutil
 import sys
+import tempfile
 import logging
 from doge_search import DOGEQuery
 from npdv_query import NPDVQuery
 from nasa_grants_query import NASAGrantsQuery
-from usaspending_terminations_query import USASpendingTerminationsQuery
+from usaspending_terminations_query import (
+    InitialEndDateResult,
+    InitialEndDateTarget,
+    USASpendingTerminationsQuery,
+    fetch_initial_reported_end_dates,
+    initial_end_date_category,
+)
 from local_usaspending_mirror_query import LocalUSASpendingMirrorQuery
 from usaspending import USASpendingClient, Award
 from contract_query import find_most_recent_csv, csv_files_equal
@@ -70,6 +78,7 @@ SNAPSHOT_COLUMNS = [
     "Latest Modification Date",
     "Start Date",
     "End Date",
+    "Initial Reported End Date",
     "Award Amount",
     "Total Outlays",
     "Description",
@@ -113,6 +122,58 @@ def _award_end_date(award: Award) -> str:
     return end_date or ""
 
 
+def _generated_id_from_url(value: str) -> str:
+    marker = "/award/"
+    if marker not in (value or ""):
+        return ""
+    return value.split(marker, 1)[1].split("/", 1)[0]
+
+
+def _initial_end_date_row(result: InitialEndDateResult, checked: str) -> dict:
+    return {
+        "Award ID": result.award_id,
+        "Generated Award ID": result.generated_award_id,
+        "Award Category": result.category,
+        "Initial Reported End Date": result.initial_end_date,
+        "Source Transaction ID": result.transaction_id,
+        "Source Action Date": result.action_date,
+        "Source Modification Number": result.modification_number,
+        "Source Basis": result.basis,
+        "Lookup Status": result.status,
+        "Last Checked Date": checked,
+    }
+
+
+def _write_initial_end_dates(rows: Dict[str, dict]) -> None:
+    """Atomically replace the machine-owned Initial End Date sidecar."""
+    path = build_master_ledger.INITIAL_END_DATES_PATH
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            newline="",
+            encoding="utf-8",
+            dir=parent,
+            prefix=".initial-end-dates-",
+            suffix=".csv",
+            delete=False,
+        ) as fh:
+            tmp_path = fh.name
+            writer = csv.DictWriter(
+                fh, fieldnames=build_master_ledger.INITIAL_END_DATE_COLUMNS
+            )
+            writer.writeheader()
+            for aid in sorted(rows):
+                writer.writerow(rows[aid])
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 class Search:
     """
     Orchestrates the contract/grant cancellation search across multiple data sources.
@@ -154,6 +215,8 @@ class Search:
         self.unresolved: Dict[
             str, List[str]
         ] = {}  # key: award_id, value: sources that flagged it
+        self.initial_end_date_rows: Dict[str, dict] = {}
+        self.initial_end_dates_changed = False
         self.ignore_award_ids: List[str] = [
             "80LARC19F0086",
             "80LARC25F7014",
@@ -220,6 +283,7 @@ class Search:
 
         self._fetch_awards()
         self._resolve_stragglers()
+        self._enrich_initial_reported_end_dates()
 
         print(f"Found {len(self.awards)} awards from USASpending API.")
 
@@ -237,9 +301,6 @@ class Search:
 
         df = pd.DataFrame(output_data, columns=SNAPSHOT_COLUMNS)
         df.sort_values(by=["Recipient", "Latest Modification Date"], inplace=True)
-
-        import tempfile
-        import shutil
 
         # Make output directory if it doesn't exist
         os.makedirs("consolidated", exist_ok=True)
@@ -264,6 +325,10 @@ class Search:
             )
             if most_recent and csv_files_equal(tmp_path, most_recent):
                 print(f"No changes from prior file, skipping export to {csv_filename}")
+                if self.initial_end_dates_changed:
+                    # A historical-only award can gain its first transaction
+                    # baseline without changing the current daily snapshot.
+                    build_master_ledger.build()
                 # Still report: an unresolved source id is a standing problem
                 # whether or not today's snapshot moved.
                 self._report_review_queue()
@@ -315,6 +380,78 @@ class Search:
             self.client.awards.search().award_ids(*self.unique_award_ids).grants().all()
         )
         self.awards = contracts + idvs + grants
+
+    def _enrich_initial_reported_end_dates(self):
+        """Backfill ledger awards and enrich every resolved current award."""
+        existing = build_master_ledger.load_initial_end_dates()
+        targets: Dict[str, InitialEndDateTarget] = {}
+
+        if os.path.exists(build_master_ledger.LEDGER_PATH):
+            with open(build_master_ledger.LEDGER_PATH, encoding="utf-8") as fh:
+                for row in csv.DictReader(fh):
+                    aid = (row.get("Award ID") or "").strip()
+                    gid = _generated_id_from_url(row.get("URL") or "")
+                    if not aid or aid in existing:
+                        continue
+                    category = initial_end_date_category(gid)
+                    lookup_id = "" if is_generated_award_id(aid) else aid
+                    targets[aid] = InitialEndDateTarget(
+                        aid, gid, category, lookup_id
+                    )
+
+        # Current award objects supply authoritative native ids and therefore
+        # replace any less-complete target recovered from the stored ledger.
+        for aid in self.unique_award_ids:
+            if aid in existing:
+                continue
+            award = self.awards_by_id.get(aid)
+            if award is None:
+                continue
+            gid = str(getattr(award, "generated_unique_award_id", "") or "")
+            targets[aid] = InitialEndDateTarget(
+                aid,
+                gid,
+                initial_end_date_category(gid),
+                str(getattr(award, "award_identifier", "") or ""),
+            )
+
+        today = datetime.now().date().isoformat()
+        fetchable = []
+        new_results = []
+        for target in targets.values():
+            if target.category and target.native_award_id:
+                fetchable.append(target)
+            else:
+                new_results.append(
+                    InitialEndDateResult(
+                        target.award_id,
+                        target.generated_award_id,
+                        target.category,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "unsupported_award_id",
+                    )
+                )
+
+        if fetchable:
+            new_results.extend(
+                fetch_initial_reported_end_dates(self.client, fetchable, end_date=today)
+            )
+
+        merged = dict(existing)
+        for result in new_results:
+            # Existing terminal results are never replaced automatically. A
+            # deliberate removal from the sidecar is the refresh mechanism.
+            if result.award_id not in merged:
+                merged[result.award_id] = _initial_end_date_row(result, today)
+
+        self.initial_end_dates_changed = merged != existing
+        if self.initial_end_dates_changed:
+            _write_initial_end_dates(merged)
+        self.initial_end_date_rows = merged
 
     def _resolve_stragglers(self):
         """Second chance for ids the batch award lookup could not match.
@@ -522,6 +659,11 @@ class Search:
                     "Latest Modification Date": mod_date,
                     "Start Date": award.period_of_performance.start_date,
                     "End Date": _award_end_date(award),
+                    # Derived independently of which source won this snapshot
+                    # row, so a DOGE/NPDV row can retain USAspending history.
+                    "Initial Reported End Date": getattr(
+                        self, "initial_end_date_rows", {}
+                    ).get(award_id, {}).get("Initial Reported End Date", ""),
                     "Award Amount": award.award_amount,
                     "Total Outlays": award.total_outlay,
                     "Description": (original_description or award.description),

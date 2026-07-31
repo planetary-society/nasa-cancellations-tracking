@@ -50,6 +50,7 @@ import glob
 import os
 import re
 from collections import Counter
+from datetime import date
 
 from contract_query import load_snapshot
 from termination_vocabulary import is_cause, is_reversal, is_vacatur
@@ -64,6 +65,28 @@ VERIFICATION_PATH = os.path.join("verification", "dropped_award_status.csv")
 
 # Machine-written screening verdicts from reverify_awards.py.
 AUTO_VERIFICATION_PATH = os.path.join("verification", "auto_verification.csv")
+
+# Machine-written, write-once transaction provenance for original end dates.
+INITIAL_END_DATES_PATH = os.path.join(
+    "verification", "initial_reported_end_dates.csv"
+)
+INITIAL_END_DATE_COLUMNS = [
+    "Award ID",
+    "Generated Award ID",
+    "Award Category",
+    "Initial Reported End Date",
+    "Source Transaction ID",
+    "Source Action Date",
+    "Source Modification Number",
+    "Source Basis",
+    "Lookup Status",
+    "Last Checked Date",
+]
+INITIAL_END_DATE_STATUSES = {
+    "resolved",
+    "no_reported_end_date",
+    "unsupported_award_id",
+}
 
 # Auto verdicts allowed to set a ledger Status, and then only at high
 # confidence. Everything else is recorded in the Auto Status column only.
@@ -128,6 +151,7 @@ LEDGER_COLUMNS = [
     "Latest Modification Date",
     "Start Date",
     "End Date",
+    "Initial Reported End Date",
     "Award Amount",
     "Total Outlays",
     "Description",
@@ -156,6 +180,9 @@ LEDGER_COLUMNS = [
 FIRST_VALUE_COLUMNS = {
     "First Award Amount": "Award Amount",
     "First End Date": "End Date",
+    # The durable sidecar is authoritative, but carrying the value in snapshots
+    # also keeps an accepted daily export self-describing.
+    "Initial Reported End Date": "Initial Reported End Date",
 }
 
 # Fraction an award's value must move before it counts as grown/shrunk.
@@ -345,7 +372,11 @@ def derive_trends(rec):
     else:
         rec["Amount Trend"] = "flat"
 
-    first_end, latest_end = rec.get("First End Date", ""), rec.get("End Date", "")
+    # Prefer the transaction-derived date from the award's base action. The
+    # legacy First End Date remains the fallback for awards whose available
+    # USAspending history carries no end date.
+    first_end = rec.get("Initial Reported End Date") or rec.get("First End Date", "")
+    latest_end = rec.get("End Date", "")
     if not first_end or not latest_end:
         rec["End Date Trend"] = "unknown"
     elif latest_end > first_end:
@@ -441,6 +472,50 @@ def load_auto_verification():
     if not os.path.exists(AUTO_VERIFICATION_PATH):
         return {}
     return load_snapshot(AUTO_VERIFICATION_PATH)
+
+
+def load_initial_end_dates():
+    """Validated Initial Reported End Date provenance, keyed by Award ID."""
+    if not os.path.exists(INITIAL_END_DATES_PATH):
+        return {}
+
+    with open(INITIAL_END_DATES_PATH, encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        missing = set(INITIAL_END_DATE_COLUMNS) - set(reader.fieldnames or [])
+        if missing:
+            raise RuntimeError(
+                f"{INITIAL_END_DATES_PATH} is missing column(s): "
+                f"{', '.join(sorted(missing))}"
+            )
+        rows = {}
+        for row in reader:
+            aid = (row.get("Award ID") or "").strip()
+            if not aid:
+                raise RuntimeError(f"{INITIAL_END_DATES_PATH} contains a blank Award ID")
+            if aid in rows:
+                raise RuntimeError(
+                    f"{INITIAL_END_DATES_PATH} contains duplicate Award ID {aid!r}"
+                )
+            status = (row.get("Lookup Status") or "").strip()
+            if status not in INITIAL_END_DATE_STATUSES:
+                raise RuntimeError(
+                    f"{INITIAL_END_DATES_PATH} has invalid Lookup Status "
+                    f"{status!r} for {aid}"
+                )
+            initial = (row.get("Initial Reported End Date") or "").strip()
+            if status == "resolved" and not initial:
+                raise RuntimeError(
+                    f"{INITIAL_END_DATES_PATH} marks {aid} resolved without a date"
+                )
+            if initial:
+                try:
+                    date.fromisoformat(initial)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"{INITIAL_END_DATES_PATH} has invalid date {initial!r} for {aid}"
+                    ) from exc
+            rows[aid] = dict(row)
+        return rows
 
 
 def load_verification(ledger=None):
@@ -593,6 +668,7 @@ def build(update_only=False):
                     rec[target] = row[source_col]
 
     auto = load_auto_verification()
+    initial_end_dates = load_initial_end_dates()
     overrides = load_verification(ledger)
 
     for aid, rec in ledger.items():
@@ -603,6 +679,13 @@ def build(update_only=False):
         rec["Transaction Baseline Amount"] = auto.get(aid, {}).get(
             "Transaction Baseline Amount", ""
         )
+        # Resolved values are write-once on the incremental path. A blank
+        # ledger field can be backfilled later, while a missing/blank sidecar
+        # value can never erase one already recorded.
+        if not rec.get("Initial Reported End Date"):
+            rec["Initial Reported End Date"] = initial_end_dates.get(aid, {}).get(
+                "Initial Reported End Date", ""
+            )
 
         if aid in latest:
             rec["Status"], rec["Status Detail"] = "listed", ""
