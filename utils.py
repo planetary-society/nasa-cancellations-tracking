@@ -282,21 +282,19 @@ def parse_mod_number(contract_mod_str: Optional[str]) -> Tuple[str, int]:
             )
             # Continue to next check
 
-    # If leading digits weren't found or failed conversion,
-    # try stripping leading non-digits (handles "P001", "S022", "A00002")
+    # If leading digits weren't found, take the first digit run. Handles
+    # "P001", "S022", "A00002" - and letter-SUFFIXED mods like "P0037A"
+    # (a sub-modification of mod 37, first seen 2026-07-30 on 80JSC023FA010).
+    # Stripping only leading non-digits left "0037A", which failed int() and
+    # defaulted to 0 - so a letter-suffixed FINAL mod would silently lose the
+    # latest-mod contest to every numbered one and NPDV would keyword-scan a
+    # stale description. Parsing it as its base number instead makes it tie
+    # with its base mod, and the >= comparison lets the later row win the tie.
     if not mod_num_found:
-        mod_part_numeric = re.sub(
-            r"^\D+", "", mod_part_full
-        )  # Remove leading non-digits
-        if mod_part_numeric:  # Check if anything numeric remains
-            try:
-                mod_num = int(mod_part_numeric)
-                mod_num_found = True
-            except (ValueError, TypeError):
-                logging.warning(
-                    f"Failed converting digits '{mod_part_numeric}' (after stripping non-digits) from '{mod_part_full}' in '{contract_mod_str}'."
-                )
-                # Mod num remains 0
+        match_digits = re.search(r"\d+", mod_part_full)
+        if match_digits:
+            mod_num = int(match_digits.group())
+            mod_num_found = True
 
     # If no number was found by either method, log a warning
     if not mod_num_found:

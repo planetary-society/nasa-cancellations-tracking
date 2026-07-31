@@ -197,6 +197,48 @@ def test_straggler_lookup_failure_does_not_abort_the_run():
     assert obj.awards_by_id == {}
 
 
+def test_award_enrichment_queries_idv_vehicles_alongside_contracts_and_grants():
+    calls = []
+
+    class Query:
+        def award_ids(self, *award_ids):
+            calls.append(("award_ids", award_ids))
+            return self
+
+        def contracts(self):
+            self.category = "contract"
+            return self
+
+        def idvs(self):
+            self.category = "idv"
+            return self
+
+        def grants(self):
+            self.category = "grant"
+            return self
+
+        def all(self):
+            calls.append(("all", self.category))
+            return [self.category]
+
+    obj = s.Search.__new__(s.Search)
+    obj.unique_award_ids = ["80HQTR23AA002", "80NSSC25K0030"]
+    obj.client = type(
+        "C",
+        (),
+        {"awards": type("A", (), {"search": staticmethod(Query)})()},
+    )()
+
+    obj._fetch_awards()
+
+    assert obj.awards == ["contract", "idv", "grant"]
+    assert [call for call in calls if call[0] == "all"] == [
+        ("all", "contract"),
+        ("all", "idv"),
+        ("all", "grant"),
+    ]
+
+
 # --- the printed report ----------------------------------------------------
 
 

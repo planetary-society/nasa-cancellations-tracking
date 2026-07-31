@@ -9,6 +9,7 @@ from doge_search import DOGEQuery
 from npdv_query import NPDVQuery
 from nasa_grants_query import NASAGrantsQuery
 from usaspending_terminations_query import USASpendingTerminationsQuery
+from local_usaspending_mirror_query import LocalUSASpendingMirrorQuery
 from usaspending import USASpendingClient, Award
 from contract_query import find_most_recent_csv, csv_files_equal
 from utils import is_generated_award_id
@@ -31,6 +32,11 @@ SOURCES = {
     "NPDV": NPDVQuery,
     "NASAGrants": NASAGrantsQuery,
     "USAspendingTerminations": USASpendingTerminationsQuery,
+    # Last on purpose: dict order is first-source-wins for an award's snapshot
+    # row, and the mirror is a local Postgres depth net that lags the live API
+    # by 2-6 weeks (and replays its last export when the DB is unreachable),
+    # so it should only own rows no other source found.
+    "LocalUSASpendingMirror": LocalUSASpendingMirrorQuery,
 }
 
 # Sources that publish an external *claim* of a cancellation, as opposed to
@@ -90,7 +96,19 @@ class Search:
 
     def __init__(self):
         self.client = USASpendingClient()
-        self.sources = SOURCES
+        # Copy so the availability gate below cannot mutate the module constant.
+        self.sources = dict(SOURCES)
+        # The one exception to the fail-loud policy: an unavailable mirror has
+        # nothing to query and nothing to replay, so drop it before the loop
+        # can abort on it. Every other source stays fail-loud - and the hard
+        # del keeps this gate loud too if the registry key is ever renamed.
+        if not LocalUSASpendingMirrorQuery.is_available():
+            del self.sources["LocalUSASpendingMirror"]
+            print(
+                "Skipping LocalUSASpendingMirror: no DB credentials and no "
+                "prior export to replay.",
+                file=sys.stderr,
+            )
         self.sources_cancellation_data: Dict[
             str, pd.DataFrame
         ] = {}  # key: source name, value: source dataframe
@@ -172,16 +190,7 @@ class Search:
             if award_id not in self.ignore_award_ids
         ]
 
-        contracts = (
-            self.client.awards.search()
-            .award_ids(*self.unique_award_ids)
-            .contracts()
-            .all()
-        )
-        grants = (
-            self.client.awards.search().award_ids(*self.unique_award_ids).grants().all()
-        )
-        self.awards = contracts + grants
+        self._fetch_awards()
         self._resolve_stragglers()
 
         print(f"Found {len(self.awards)} awards from USASpending API.")
@@ -262,6 +271,22 @@ class Search:
         build_master_ledger.build()
 
         self._report_review_queue()
+
+    def _fetch_awards(self):
+        """Fetch every award category emitted by the configured sources."""
+        contracts = (
+            self.client.awards.search()
+            .award_ids(*self.unique_award_ids)
+            .contracts()
+            .all()
+        )
+        idvs = (
+            self.client.awards.search().award_ids(*self.unique_award_ids).idvs().all()
+        )
+        grants = (
+            self.client.awards.search().award_ids(*self.unique_award_ids).grants().all()
+        )
+        self.awards = contracts + idvs + grants
 
     def _resolve_stragglers(self):
         """Second chance for ids the batch award lookup could not match.
