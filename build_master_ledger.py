@@ -325,12 +325,10 @@ def derive_trends(rec):
         _amount(rec.get("First Award Amount")),
         _amount(rec.get("Award Amount")),
     )
-    baseline = _amount(rec.get("Transaction Baseline Amount"))
-    first = (
-        baseline
-        if (observed_first is None or observed_first == 0) and baseline is not None
-        else observed_first
-    )
+    # A missing or zero first observation falls back to the transaction-derived
+    # baseline; a baseline that is itself missing or zero lands in the "unknown"
+    # branch below, where percentage change from zero is undefined anyway.
+    first = observed_first or _amount(rec.get("Transaction Baseline Amount"))
     if first is None or latest is None or first == 0:
         rec["Amount Trend"] = "unknown"
     elif latest > first * (1 + TREND_THRESHOLD):

@@ -331,21 +331,20 @@ def canonical_generated_award_id(value: Optional[str]) -> str:
     awards with the top-tier agency code ``080`` instead.
     """
     text = (value or "").strip()
-    match = re.fullmatch(r"ASST_(?:NON|AGG)_([^_]+)_8000", text)
-    nasa_award_id = match and match.group(1).upper().startswith(("80", "NN"))
-    if nasa_award_id:
-        return f"{text[:-5]}_080"
+    match = re.fullmatch(r"(ASST_(?:NON|AGG)_([^_]+))_8000", text)
+    if match and match.group(2).upper().startswith(("80", "NN")):
+        return f"{match.group(1)}_080"
     return text
 
 
 def canonical_usaspending_url(value: Optional[str]) -> str:
     """Canonicalize the generated award id embedded in a USAspending URL."""
     text = (value or "").strip()
-    match = re.search(r"(/award/)([^/?#]+)", text)
+    match = re.search(r"/award/([^/?#]+)", text)
     if not match:
         return text
-    award_id = canonical_generated_award_id(match.group(2))
-    return f"{text[: match.start(2)]}{award_id}{text[match.end(2) :]}"
+    award_id = canonical_generated_award_id(match.group(1))
+    return f"{text[: match.start(1)]}{award_id}{text[match.end(1) :]}"
 
 
 def award_id_from_generated_id(value: Optional[str]) -> str:

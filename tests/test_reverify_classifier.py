@@ -146,107 +146,54 @@ def test_transaction_baseline_requires_a_complete_numeric_history():
     )
 
 
-def test_zero_first_amount_is_selected_once_for_baseline_backfill():
-    ledger = {
-        "80NSSC25FA315": {
-            "First Award Amount": "0",
-            "Status": "listed",
-            "Claiming Source": "",
-        }
-    }
-    selected, tiers = reverify_awards.select_awards(
-        ledger, {}, stale_days=30, include_excluded=False
-    )
-
-    assert selected == ["80NSSC25FA315"]
-    assert tiers == {"0_baseline_backfill": 1}
-
-
-def test_excluded_award_is_still_selected_for_baseline_backfill():
-    aid = "80LARC19F0127"
+def _select_one(first_amount, *, status="listed", baseline=None):
+    """Run select_awards over a single award with the given baseline state."""
+    aid = "80NSSC25FA315"
     ledger = {
         aid: {
-            "First Award Amount": "0.00",
-            "Status": "excluded_by_design",
+            "First Award Amount": first_amount,
+            "Status": status,
             "Claiming Source": "",
         }
     }
-
-    selected, tiers = reverify_awards.select_awards(
-        ledger, {}, stale_days=30, include_excluded=False
+    previous = (
+        {}
+        if baseline is None
+        else {
+            aid: {
+                "Transaction Baseline Amount": baseline,
+                "Last Success Date": date.today().isoformat(),
+            }
+        }
     )
+    selected, tiers = reverify_awards.select_awards(
+        ledger, previous, stale_days=30, include_excluded=False
+    )
+    return aid, selected, tiers
+
+
+@pytest.mark.parametrize(
+    "first_amount, status, baseline",
+    [
+        ("0", "listed", None),
+        # Backfill outranks the excluded-by-design skip.
+        ("0.00", "excluded_by_design", None),
+        # A bounded migration run leaves untouched rows blank, not `unknown`.
+        ("0", "listed", ""),
+    ],
+)
+def test_award_without_a_usable_first_amount_is_selected_for_backfill(
+    first_amount, status, baseline
+):
+    aid, selected, tiers = _select_one(first_amount, status=status, baseline=baseline)
 
     assert selected == [aid]
     assert tiers == {"0_baseline_backfill": 1}
 
 
-def test_blank_baseline_from_a_bounded_migration_remains_selected():
-    aid = "UNPROCESSED-1"
-    ledger = {
-        aid: {
-            "First Award Amount": "0",
-            "Status": "listed",
-            "Claiming Source": "",
-        }
-    }
-    previous = {
-        aid: {
-            "Transaction Baseline Amount": "",
-            "Last Success Date": date.today().isoformat(),
-        }
-    }
-
-    selected, tiers = reverify_awards.select_awards(
-        ledger, previous, stale_days=30, include_excluded=False
-    )
-
-    assert selected == [aid]
-    assert tiers == {"0_baseline_backfill": 1}
-
-
-def test_computed_zero_baseline_is_not_selected_again_while_fresh():
-    aid = "ZERO-1"
-    ledger = {
-        aid: {
-            "First Award Amount": "0",
-            "Status": "listed",
-            "Claiming Source": "",
-        }
-    }
-    previous = {
-        aid: {
-            "Transaction Baseline Amount": "0.00",
-            "Last Success Date": date.today().isoformat(),
-        }
-    }
-
-    selected, tiers = reverify_awards.select_awards(
-        ledger, previous, stale_days=30, include_excluded=False
-    )
-
-    assert selected == []
-    assert tiers == {"skipped_fresh": 1}
-
-
-def test_attempted_unknown_baseline_is_not_selected_again_while_fresh():
-    aid = "UNKNOWN-1"
-    ledger = {
-        aid: {
-            "First Award Amount": "0",
-            "Status": "listed",
-            "Claiming Source": "",
-        }
-    }
-    previous = {
-        aid: {
-            "Transaction Baseline Amount": "unknown",
-            "Last Success Date": date.today().isoformat(),
-        }
-    }
-
-    selected, tiers = reverify_awards.select_awards(
-        ledger, previous, stale_days=30, include_excluded=False
-    )
+@pytest.mark.parametrize("baseline", ["0.00", "unknown"])
+def test_attempted_baseline_is_not_selected_again_while_fresh(baseline):
+    _, selected, tiers = _select_one("0", baseline=baseline)
 
     assert selected == []
     assert tiers == {"skipped_fresh": 1}

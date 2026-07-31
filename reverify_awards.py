@@ -106,6 +106,10 @@ MAX_UNRESOLVED_SHARE = 0.25
 # without limiting the complete history.
 PAGE_SIZE = 5000
 
+# Splits a modification number into digit/non-digit runs so same-day mods sort
+# in natural order ("2" before "10") rather than lexicographically.
+_MOD_NUMBER_PARTS = re.compile(r"(\d+)")
+
 # --- Action type vocabularies -------------------------------------------
 # Selected by generated-id prefix. This is NOT optional: `D` means "change
 # order" for contracts but "adjustment to completed project" (a closeout) for
@@ -210,7 +214,7 @@ def _sort_key(txn):
     modification = str(getattr(txn, "modification_number", "") or "")
     natural_modification = tuple(
         (1, int(part)) if part.isdigit() else (0, part.casefold())
-        for part in re.split(r"(\d+)", modification)
+        for part in _MOD_NUMBER_PARTS.split(modification)
         if part
     )
     return (
@@ -225,8 +229,8 @@ def transaction_baseline_amount(txns):
     Awards first observed on a zero-dollar administrative or termination
     action have no useful snapshot baseline. The transaction history preserves
     the sequence of obligation changes, so its maximum cumulative balance is a
-    source-backed comparison point. Refuse partial or non-numeric histories
-    rather than silently treating missing obligations as zero.
+    source-backed comparison point. Refuse a history with any non-numeric
+    obligation rather than silently treating it as zero.
     """
     if not txns:
         return None
@@ -450,19 +454,13 @@ def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):
     for aid, rec in ledger.items():
         status = rec.get("Status", "")
         prev = previous.get(aid, {})
-        first_amount = str(rec.get("First Award Amount") or "")
-        try:
-            first_amount = float(first_amount.replace("$", "").replace(",", ""))
-        except ValueError:
-            first_amount = None
-        # Blank means not yet attempted. A successful lookup whose history
-        # cannot yield a numeric baseline stores the explicit `unknown`
+        # A blank baseline means not yet attempted. A successful lookup whose
+        # history cannot yield a numeric baseline stores the explicit `unknown`
         # sentinel, avoiding a permanent retry loop while still allowing
         # bounded migration runs to pick up untouched rows on the next pass.
-        baseline_missing = not prev.get("Transaction Baseline Amount")
-        needs_baseline = (
-            first_amount is None or first_amount == 0
-        ) and baseline_missing
+        needs_baseline = not build_master_ledger._amount(
+            rec.get("First Award Amount")
+        ) and not prev.get("Transaction Baseline Amount")
 
         if (
             status == "excluded_by_design"

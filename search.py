@@ -101,10 +101,10 @@ def _award_end_date(award: Award) -> str:
     documented fallback.
     """
     end_date = award.period_of_performance.end_date
-    if end_date or award.category != "idv":
-        return end_date or ""
-    raw = award.raw or {}
-    return raw.get("Last Date to Order") or raw.get("last_date_to_order") or ""
+    if not end_date and award.category == "idv":
+        raw = award.raw or {}
+        end_date = raw.get("Last Date to Order") or raw.get("last_date_to_order")
+    return end_date or ""
 
 
 class Search:
