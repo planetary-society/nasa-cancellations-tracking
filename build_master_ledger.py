@@ -65,7 +65,7 @@ import sources
 from contract_query import load_snapshot
 from detection_methods import DETECTION_METHODS, infer_snapshot_method
 from termination_vocabulary import is_cause, is_reversal, is_vacatur
-from utils import canonical_usaspending_url, read_rows
+from utils import as_congressional_district, canonical_usaspending_url, read_rows
 
 CONSOLIDATED_DIR = "consolidated"
 LEDGER_PATH = os.path.join(CONSOLIDATED_DIR, "master_ledger.csv")
@@ -267,6 +267,16 @@ REVISABLE_COLUMNS = tuple(c for c in STICKY_COLUMNS if c != CLAIMANT_COLUMN)
 # recent detected action, so a later mod supersedes the earlier evidence. Every
 # snapshot written before 2026-07-30 lacks the column entirely, which reads as
 # blank here and therefore cannot erase a value a newer snapshot supplies.
+# Applied to every snapshot row on ingest, before it is either used to create
+# a ledger record or refreshed into one. Archived snapshots are never
+# rewritten, so a value the current code would not write can still arrive from
+# 400-odd files; a normalizer here is what keeps it out of the ledger without
+# touching the archive. Silent by design - these are malformed values, not
+# events worth logging 132 times per rebuild.
+COLUMN_NORMALIZERS = {
+    "Recipient Congressional District": as_congressional_district,
+}
+
 REFRESHED_COLUMNS = (
     "Recipient Name",
     "Recipient Congressional District",
@@ -659,7 +669,15 @@ def build(update_only=False):
     latest_claim = {}  # award id -> most recently seen claim values
     if update_only and os.path.exists(LEDGER_PATH):
         for r in read_rows(LEDGER_PATH):
-            ledger[r["Award ID"]] = dict(r)
+            # The incremental path never replays the archive, so a malformed
+            # value already recorded would otherwise outlive the fix until
+            # someone ran a full rebuild.
+            ledger[r["Award ID"]] = {
+                column: COLUMN_NORMALIZERS[column](value)
+                if column in COLUMN_NORMALIZERS
+                else value
+                for column, value in r.items()
+            }
             # Reseed from what was already recorded, so a claim revised on
             # an earlier day is not appended again on every later run.
             latest_claim[r["Award ID"]] = parse_claim_revisions(
@@ -687,6 +705,9 @@ def build(update_only=False):
             # archived Source/Detection fields support; legacy Local Mirror
             # rows remain explicitly legacy rather than gaining false detail.
             row["Primary Detection Method"] = infer_snapshot_method(row)
+            for column, normalize in COLUMN_NORMALIZERS.items():
+                if column in row:
+                    row[column] = normalize(row[column])
             d = row.get("Award or Action Description", "")
             if d:
                 # dict-as-ordered-set: a full rebuild walks ~400 snapshots, and

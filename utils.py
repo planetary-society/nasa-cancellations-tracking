@@ -364,6 +364,41 @@ def canonical_generated_award_id(value: str | None) -> str:
     return text
 
 
+CONGRESSIONAL_DISTRICT_RE = re.compile(r"^[A-Z]{2}-\d{2}$")
+
+
+def congressional_district(location) -> str:
+    """`SS-DD` for a recipient location, blank unless both halves are present.
+
+    USAspending publishes recipient locations that carry a congressional code
+    and no state at all - 80AFRC19F0092's is
+    ``{"country_code": "USA", "district": "45"}`` - and the ORM's
+    ``Location.district`` filters the missing piece out before joining, so it
+    degrades silently to a bare ``45`` in a column of state-district pairs.
+    The mirror case, a state with no code, degrades to a bare ``CA``.
+
+    A district number without its state is not citable and cannot be inferred,
+    so it is dropped rather than published half-formed. Foreign recipients
+    legitimately have neither part and were always blank here.
+    """
+    state = str(getattr(location, "state_code", "") or "").strip().upper()
+    code = str(getattr(location, "congressional_code", "") or "").strip()
+    if not state or not code:
+        return ""
+    return as_congressional_district(f"{state}-{code.zfill(2)}")
+
+
+def as_congressional_district(value: str | None) -> str:
+    """A stored district value, blank unless it is a well-formed pair.
+
+    The read-side twin of `congressional_district`. 132 archived snapshots
+    carry the bare ``45`` and are never rewritten, so without this a rebuild
+    replays the malformed value straight back into the ledger.
+    """
+    text = str(value or "").strip().upper()
+    return text if CONGRESSIONAL_DISTRICT_RE.match(text) else ""
+
+
 def canonical_usaspending_url(value: str | None) -> str:
     """Canonicalize the generated award id embedded in a USAspending URL."""
     text = (value or "").strip()

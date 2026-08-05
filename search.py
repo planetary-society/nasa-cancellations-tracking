@@ -32,6 +32,7 @@ from usaspending_terminations_query import USASpendingTerminationsQuery
 from utils import (
     canonical_generated_award_id,
     canonical_usaspending_url,
+    congressional_district,
     is_generated_award_id,
     read_rows,
     write_sidecar_csv,
@@ -1040,7 +1041,7 @@ class Search:
                 # Hoisted so the dict below stays one column per line: it is
                 # read as a table against SNAPSHOT_COLUMNS, and wrapped entries
                 # are what make a misplaced field hard to spot.
-                district = award.recipient.location.district
+                district = congressional_district(award.recipient.location)
                 description = original_description or award.description
                 categories = ", ".join(award.recipient.business_types)
                 url = canonical_usaspending_url(award.usa_spending_url)
