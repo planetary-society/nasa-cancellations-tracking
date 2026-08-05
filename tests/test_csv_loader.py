@@ -128,7 +128,10 @@ def test_load_snapshot_forwards_aliases_and_skips_blank_ids(tmp_path, write_csv)
     write_csv(
         path,
         ["Award ID", "Sources"],
-        [{"Award ID": "A-1", "Sources": "DOGE"}, {"Award ID": "", "Sources": "NPDV"}],
+        [
+            {"Award ID": "A-1", "Sources": "DOGE"},
+            {"Award ID": "", "Sources": "NASA Procurement Data View"},
+        ],
     )
 
     snap = load_snapshot(path, aliases={"Sources": "Flagged By"})

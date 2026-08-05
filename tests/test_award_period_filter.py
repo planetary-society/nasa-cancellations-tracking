@@ -206,7 +206,7 @@ def _write_default_facts(rows):
 def _search_obj(nasa_ids, *, other_source_ids=()):
     obj = search.Search.__new__(search.Search)
     obj.sources_cancellation_data = {
-        "NASAGrants": pd.DataFrame(
+        "NASA Grants": pd.DataFrame(
             {
                 "Award ID": nasa_ids,
                 "status": ["Administrative - Decrease"] * len(nasa_ids),
@@ -226,7 +226,7 @@ def test_nasa_grants_requires_and_uses_persisted_mirror_confirmation(workdir, ca
 
     obj._filter_nasa_grant_period_changes()
 
-    frame = obj.sources_cancellation_data["NASAGrants"]
+    frame = obj.sources_cancellation_data["NASA Grants"]
     assert frame["Award ID"].tolist() == ["CONFIRMED"]
     assert frame.iloc[0]["action_date"] == "2026-02-25"
     assert frame.iloc[0]["status"].startswith("End date shortened 368 days")
@@ -240,7 +240,7 @@ def test_unconfirmed_nasa_candidate_survives_through_another_source(workdir):
 
     obj._filter_nasa_grant_period_changes()
 
-    assert obj.sources_cancellation_data["NASAGrants"].empty
+    assert obj.sources_cancellation_data["NASA Grants"].empty
     assert obj.unique_award_ids == ["A-1"]
 
 

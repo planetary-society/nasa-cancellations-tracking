@@ -102,7 +102,7 @@ def test_a_built_row_fills_every_snapshot_column():
     column of empty strings rather than an error - it would take a person
     noticing a blank column in published data.
     """
-    obj = make_search({"NPDV": [row("A-1")]}, [FakeAward("A-1")])
+    obj = make_search({"NASA Procurement Data View": [row("A-1")]}, [FakeAward("A-1")])
 
     built = set(obj.unique_cancellations["A-1"])
 
@@ -134,7 +134,7 @@ def row(aid, desc="terminated", status="", action_date="2025-06-01", basis="evid
 
 
 def test_resolvable_award_is_not_flagged():
-    obj = make_search({"NPDV": [row("A-1")]}, [FakeAward("A-1")])
+    obj = make_search({"NASA Procurement Data View": [row("A-1")]}, [FakeAward("A-1")])
     assert obj.unresolved == {}
     assert "A-1" in obj.unique_cancellations
 
@@ -147,7 +147,7 @@ def test_idv_last_date_to_order_fills_a_missing_period_end():
         last_date_to_order="2025-09-24",
     )
     obj = make_search(
-        {"USAspendingTerminations": [row("80KSC020D0016")]},
+        {"USAspending Terminations": [row("80KSC020D0016")]},
         [award],
     )
 
@@ -157,7 +157,7 @@ def test_idv_last_date_to_order_fills_a_missing_period_end():
 def test_idv_snake_case_last_date_to_order_is_also_supported():
     award = FakeAward("IDV-1", category="idv", end_date=None)
     award.raw = {"last_date_to_order": "2025-09-24"}
-    obj = make_search({"USAspendingTerminations": [row("IDV-1")]}, [award])
+    obj = make_search({"USAspending Terminations": [row("IDV-1")]}, [award])
 
     assert obj.unique_cancellations["IDV-1"]["Current End Date"] == "2025-09-24"
 
@@ -169,7 +169,7 @@ def test_idv_period_end_remains_authoritative_when_present():
         end_date="2026-12-31",
         last_date_to_order="2025-09-24",
     )
-    obj = make_search({"USAspendingTerminations": [row("IDV-1")]}, [award])
+    obj = make_search({"USAspending Terminations": [row("IDV-1")]}, [award])
 
     assert obj.unique_cancellations["IDV-1"]["Current End Date"] == "2026-12-31"
 
@@ -181,7 +181,7 @@ def test_non_idv_never_uses_last_date_to_order():
         end_date=None,
         last_date_to_order="2025-09-24",
     )
-    obj = make_search({"USAspendingTerminations": [row("CONTRACT-1")]}, [award])
+    obj = make_search({"USAspending Terminations": [row("CONTRACT-1")]}, [award])
 
     assert obj.unique_cancellations["CONTRACT-1"]["Current End Date"] == ""
 
@@ -192,7 +192,7 @@ def test_search_publishes_the_canonical_nasa_assistance_url():
         "https://www.usaspending.gov/award/ASST_NON_80NSSC22M0122_8000/"
     )
 
-    obj = make_search({"NASAGrants": [row("80NSSC22M0122")]}, [award])
+    obj = make_search({"NASA Grants": [row("80NSSC22M0122")]}, [award])
 
     assert obj.unique_cancellations["80NSSC22M0122"]["USAspending URL"].endswith(
         "/ASST_NON_80NSSC22M0122_080/"
@@ -260,7 +260,7 @@ def test_one_full_history_supplies_snapshot_and_persisted_facts(workdir):
     award.generated_unique_award_id = "CONT_AWD_A-1"
     award.transactions = query
 
-    obj = make_search({"NPDV": [row("A-1")]}, [award])
+    obj = make_search({"NASA Procurement Data View": [row("A-1")]}, [award])
     obj.unique_award_ids = ["A-1"]
     obj._enrich_transaction_facts()
     record = obj.unique_cancellations["A-1"]
@@ -285,7 +285,7 @@ def test_one_full_history_supplies_snapshot_and_persisted_facts(workdir):
 
 
 def test_transaction_fields_are_blank_when_usaspending_returns_no_history():
-    obj = make_search({"NPDV": [row("A-1")]}, [FakeAward("A-1")])
+    obj = make_search({"NASA Procurement Data View": [row("A-1")]}, [FakeAward("A-1")])
     record = obj.unique_cancellations["A-1"]
 
     for column in (
@@ -311,11 +311,11 @@ def test_snapshot_carries_each_source_detection_string():
     """
     detections = {
         "DOGE": "TERMINATED",
-        "NASAGrants": "Administrative - Change Pop End Date",
-        "USAspendingTerminations": (
+        "NASA Grants": "Administrative - Change Pop End Date",
+        "USAspending Terminations": (
             "Terminate-for-convenience action P00180 on 2026-05-06"
         ),
-        "LocalUSASpendingMirror": (
+        "Local USAspending Mirror": (
             "Terminate-for-convenience action P00002 on 2025-01-24; "
             "End date truncated 221 days by mod P00002 on 2025-01-24"
         ),
@@ -331,14 +331,16 @@ def test_snapshot_carries_each_source_detection_string():
 
 def test_source_without_detection_evidence_leaves_the_cell_empty():
     """NPDV infers nothing it can name: it matches on description text only."""
-    obj = make_search({"NPDV": [row("A-1")]}, [FakeAward("A-1")])
+    obj = make_search({"NASA Procurement Data View": [row("A-1")]}, [FakeAward("A-1")])
 
     assert obj.unique_cancellations["A-1"]["Detection Evidence"] == ""
 
 
 def test_an_all_blank_status_column_does_not_become_the_string_nan():
     """pandas hands back NaN for a column of Nones, and str(NaN) is 'nan'."""
-    obj = make_search({"NPDV": [row("A-1", status=None)]}, [FakeAward("A-1")])
+    obj = make_search(
+        {"NASA Procurement Data View": [row("A-1", status=None)]}, [FakeAward("A-1")]
+    )
 
     assert obj.unique_cancellations["A-1"]["Detection Evidence"] == ""
 
@@ -352,18 +354,24 @@ def test_unresolvable_award_is_recorded_with_its_source():
 
 def test_ignored_awards_are_not_reported_as_unresolved():
     """They are excluded from the lookup on purpose; absence is expected."""
-    obj = make_search({"NPDV": [row("80LARC19F0086")]}, [], ignore=["80LARC19F0086"])
+    obj = make_search(
+        {"NASA Procurement Data View": [row("80LARC19F0086")]},
+        [],
+        ignore=["80LARC19F0086"],
+    )
     assert obj.unresolved == {}
 
 
 def test_blank_award_id_is_not_reported():
-    obj = make_search({"NPDV": [row("")]}, [])
+    obj = make_search({"NASA Procurement Data View": [row("")]}, [])
     assert obj.unresolved == {}
 
 
 def test_same_award_unresolved_from_two_sources():
-    obj = make_search({"DOGE": [row("X-1")], "NPDV": [row("X-1")]}, [])
-    assert sorted(obj.unresolved["X-1"]) == ["DOGE", "NPDV"]
+    obj = make_search(
+        {"DOGE": [row("X-1")], "NASA Procurement Data View": [row("X-1")]}, []
+    )
+    assert sorted(obj.unresolved["X-1"]) == ["DOGE", "NASA Procurement Data View"]
 
 
 # --- generated-id extraction ----------------------------------------------
@@ -516,7 +524,10 @@ def ledger(workdir, write_csv):
 def test_report_names_every_unresolved_award(capsys, ledger):
     ledger([])
     obj = s.Search.__new__(s.Search)
-    obj.unresolved = {"ASST_NON_80NSSC24K0913_8000": ["DOGE"], "B-2": ["NPDV"]}
+    obj.unresolved = {
+        "ASST_NON_80NSSC24K0913_8000": ["DOGE"],
+        "B-2": ["NASA Procurement Data View"],
+    }
     obj._report_review_queue()
     out = capsys.readouterr().out
     assert "REVIEW QUEUE" in out
@@ -552,9 +563,9 @@ def test_report_lists_unexplained_ledger_statuses(capsys, ledger):
 
     ledger(
         [
-            rec("P-1", "dropped_pending_review"),
+            rec("P-1", "unflagged_pending_review"),
             rec("P-2", "needs_manual_review"),
-            rec("OK-1", "listed"),
+            rec("OK-1", "currently_flagged"),
             rec("OK-2", "excluded_by_design"),
         ]
     )
@@ -582,7 +593,9 @@ def test_report_surfaces_machine_disagreement(capsys, ledger):
     ledger(
         [
             rec("D-1", "source_retired", "continued"),
-            rec("L-1", "listed", "continued"),  # listed: not a disagreement
+            rec(
+                "L-1", "currently_flagged", "continued"
+            ),  # currently flagged: not a disagreement
             rec("S-1", "still_terminated", "still_terminated"),  # agrees
         ]
     )

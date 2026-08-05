@@ -4,6 +4,7 @@ import csv
 
 import build_master_ledger as bml
 import reverify_awards
+import sources
 
 COLS = [
     "Source",
@@ -104,7 +105,7 @@ def test_claim_survives_a_day_when_another_source_wins_the_row(workdir):
     Before claims were sticky, day 3's blank claim fields would overwrite the
     claim and it would vanish from the published ledger.
     """
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
     write_snap(
         "consolidated/nasa_x_2026-01-01.csv", [keep, row("X-1", "DOGE", DOGE_DESC)]
     )
@@ -113,7 +114,14 @@ def test_claim_survives_a_day_when_another_source_wins_the_row(workdir):
     )
     write_snap(
         "consolidated/nasa_x_2026-01-03.csv",
-        [keep, row("X-1", "NPDV", "Terminate for convenience mod P00004")],
+        [
+            keep,
+            row(
+                "X-1",
+                "NASA Procurement Data View",
+                "Terminate for convenience mod P00004",
+            ),
+        ],
     )
     bml.build()
 
@@ -121,11 +129,11 @@ def test_claim_survives_a_day_when_another_source_wins_the_row(workdir):
     assert x["Claimed By"] == "DOGE"
     assert x["DOGE Claimed Status"] == "TERMINATED"
     assert x["DOGE Claimed Savings"] == "1423496.00"
-    assert x["Flagged By"] == "DOGE; NPDV"
+    assert x["Flagged By"] == f"DOGE; {sources.NPDV}"
 
 
 def test_claim_captured_from_real_columns_not_only_prose(workdir):
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
     write_snap(
         "consolidated/nasa_x_2026-01-01.csv",
         [
@@ -150,10 +158,10 @@ def test_claim_captured_from_real_columns_not_only_prose(workdir):
 
 
 def test_build_canonicalizes_a_legacy_nasa_assistance_url(workdir):
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
     legacy = row(
         "80NSSC22M0122",
-        "NASAGrants",
+        "NASA Grants",
         "Administrative - Decrease",
         **{
             "USAspending URL": (
@@ -171,7 +179,7 @@ def test_build_canonicalizes_a_legacy_nasa_assistance_url(workdir):
 
 
 def test_build_uses_auto_transaction_baseline_for_a_zero_snapshot_amount(workdir):
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
     claimed = row(
         "A-0",
         "DOGE",
@@ -202,7 +210,7 @@ def test_build_uses_auto_transaction_baseline_for_a_zero_snapshot_amount(workdir
 
 
 def test_restatement_is_logged_not_overwritten(workdir):
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
     first = DOGE_DESC
     second = DOGE_DESC.replace("Status: TERMINATED", "Status: Expired")
     write_snap("consolidated/nasa_x_2026-01-01.csv", [keep, row("X-1", "DOGE", first)])
@@ -222,7 +230,7 @@ def test_incremental_build_does_not_re_log_an_old_revision(workdir):
     was last seen is gone. Without reseeding it from the stored revisions, a
     claim revised on an earlier day gets appended again on every later run.
     """
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
     first = DOGE_DESC
     second = DOGE_DESC.replace("Status: TERMINATED", "Status: Expired")
     write_snap("consolidated/nasa_x_2026-01-01.csv", [keep, row("X-1", "DOGE", first)])
@@ -249,20 +257,20 @@ def test_incremental_build_cannot_infer_history_based_statuses(workdir):
     ledger. This test pins the difference so the daily path is never quietly
     switched back.
     """
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
-    resc = row("R-1", "NPDV", "Rescinding stop work notice")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
+    resc = row("R-1", "NASA Procurement Data View", "Rescinding stop work notice")
     write_snap("consolidated/nasa_x_2026-01-01.csv", [keep, resc])
     write_snap("consolidated/nasa_x_2026-01-02.csv", [keep, resc])
 
     # While R-1 is still in the snapshot it is simply `listed`.
     bml.build()
-    assert ledger()["R-1"]["Tracking Status"] == "listed"
+    assert ledger()["R-1"]["Tracking Status"] == "currently_flagged"
 
     # It drops out. The rescission text now lives only in older snapshots,
     # which the incremental path never reads.
     write_snap("consolidated/nasa_x_2026-01-03.csv", [keep])
     bml.build(update_only=True)
-    assert ledger()["R-1"]["Tracking Status"] == "dropped_pending_review", (
+    assert ledger()["R-1"]["Tracking Status"] == "unflagged_pending_review", (
         "if --update can now infer this, the full-rebuild rationale in "
         "search.py should be revisited"
     )
@@ -278,8 +286,8 @@ def test_reverted_grants_experiment_never_enters_the_ledger(workdir):
     Its rows are dropped at ingest rather than recorded and reclassified, so
     66 phantom awards stay out of an artifact meant to be citable.
     """
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
-    errant = row("ERR-1", "NASAGrants", "Cancelled - grant status")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
+    errant = row("ERR-1", "NASA Grants", "Cancelled - grant status")
     write_snap("consolidated/nasa_x_2026-01-08.csv", [keep, errant])
     write_snap("consolidated/nasa_x_2026-01-09.csv", [keep])
     bml.build()
@@ -290,9 +298,9 @@ def test_reverted_grants_experiment_never_enters_the_ledger(workdir):
 def test_only_that_source_on_that_date_is_dropped(workdir):
     """A NASAGrants award seen on other dates keeps its real observations -
     23 of the 89 rows that day were legitimate."""
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
-    real = row("REAL-1", "NASAGrants", "Administrative - Decrease")
-    other_source = row("OTHER-1", "NPDV", "terminated")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
+    real = row("REAL-1", "NASA Grants", "Administrative - Decrease")
+    other_source = row("OTHER-1", "NASA Procurement Data View", "terminated")
     write_snap("consolidated/nasa_x_2026-01-07.csv", [keep, real])
     write_snap("consolidated/nasa_x_2026-01-08.csv", [keep, real, other_source])
     write_snap("consolidated/nasa_x_2026-01-09.csv", [keep, real])
@@ -307,8 +315,8 @@ def test_only_that_source_on_that_date_is_dropped(workdir):
 
 
 def test_same_source_on_a_different_date_is_untouched(workdir):
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
-    grant = row("G-1", "NASAGrants", "Administrative - Decrease")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
+    grant = row("G-1", "NASA Grants", "Administrative - Decrease")
     write_snap("consolidated/nasa_x_2026-01-09.csv", [keep, grant])
     bml.build()
     assert "G-1" in ledger()
@@ -345,7 +353,7 @@ def test_parse_claim_revisions_still_reads_a_pre_rename_value():
 
 
 def test_unchanged_claim_logs_no_revision(workdir):
-    keep = row("KEEP-1", "NPDV", "ordinary termination")
+    keep = row("KEEP-1", "NASA Procurement Data View", "ordinary termination")
     for day in ("2026-01-01", "2026-01-02", "2026-01-03"):
         write_snap(
             f"consolidated/nasa_x_{day}.csv", [keep, row("X-1", "DOGE", DOGE_DESC)]

@@ -15,7 +15,7 @@ from tests.helpers import FakeTxn
 REC = {
     "First Flagged Date": "2025-04-05",
     "Last Flagged Date": "2026-07-29",
-    "Flagged By": "NPDV",
+    "Flagged By": "NASA Procurement Data View",
 }
 
 
@@ -116,10 +116,10 @@ def test_classify_no_longer_special_cases_the_grants_experiment():
         **{
             "First Flagged Date": "2026-01-08",
             "Last Flagged Date": "2026-01-08",
-            "Flagged By": "NASAGrants",
+            "Flagged By": "NASA Grants",
         },
     )
-    assert status == "dropped_pending_review"
+    assert status == "unflagged_pending_review"
 
 
 def test_fpds_retirement():
@@ -136,18 +136,18 @@ def test_fpds_source_but_a_later_last_seen_is_not_source_retired():
         ["ordinary description"],
         **{"Last Flagged Date": "2026-06-16", "Flagged By": "NPDV; FPDS"},
     )
-    assert status == "dropped_pending_review"
+    assert status == "unflagged_pending_review"
 
 
 def test_fallback_is_pending_review():
     status, detail = classify(["routine administrative modification"])
-    assert status == "dropped_pending_review"
+    assert status == "unflagged_pending_review"
     assert "verify" in detail.lower()
 
 
 def test_no_description_history_at_all():
     status, _ = bml.classify("A-1", dict(REC), {})
-    assert status == "dropped_pending_review"
+    assert status == "unflagged_pending_review"
 
 
 # --- the point of the whole change: the two modules must agree -------------

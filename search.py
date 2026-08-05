@@ -71,7 +71,7 @@ CLAIM_SOURCES = frozenset({sources.DOGE})
 # Ledger statuses that mean "left the snapshot and nobody has said why yet".
 # Everything else is either currently flagged, adjudicated, or excluded on
 # purpose - see the build_master_ledger docstring for the full vocabulary.
-UNEXPLAINED_STATUSES = {"dropped_pending_review", "needs_manual_review"}
+UNEXPLAINED_STATUSES = {"unflagged_pending_review", "needs_manual_review"}
 
 # Claim fields: what an external source asserted, kept separate from what the
 # award data shows actually happened. Imported, not restated: the ledger treats
@@ -932,7 +932,7 @@ class Search:
             for r in rows
             if r.get("Automated Verdict")
             and r.get("Automated Verdict") != r["Tracking Status"]
-            and r["Tracking Status"] not in ("listed", "excluded_by_design")
+            and r["Tracking Status"] not in ("currently_flagged", "excluded_by_design")
         ]
         if disagree:
             print(

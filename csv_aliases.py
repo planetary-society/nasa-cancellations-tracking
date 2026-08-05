@@ -99,6 +99,22 @@ TRANSACTION_FACTS: dict[str, str] = {}
 # verification/award_period_change_facts.csv - mirror period-change facts.
 PERIOD_CHANGE_FACTS: dict[str, str] = {}
 
+# Values, not headers. The source labels are written into the Source cell of
+# every archived snapshot, and those files are never rewritten, so a rebuild
+# replaying them has to translate the cell as well as the column.
+#
+# Only snapshots need this. The ledger's Flagged By is re-accumulated from
+# these Source cells on every full rebuild, and its Tracking Status is
+# recomputed outright, so both arrive already translated.
+SNAPSHOT_VALUES = {
+    "Source": {
+        "NPDV": "NASA Procurement Data View",
+        "NASAGrants": "NASA Grants",
+        "LocalUSASpendingMirror": "Local USAspending Mirror",
+        "USAspendingTerminations": "USAspending Terminations",
+    }
+}
+
 LEDGER_BASENAME = "master_ledger.csv"
 SNAPSHOT_DIR = "consolidated"
 
@@ -147,3 +163,12 @@ def aliases_for(path: str) -> dict[str, str]:
     if table is not None:
         return table
     return SNAPSHOT if is_snapshot(path) else {}
+
+
+def value_aliases_for(path: str) -> dict[str, dict[str, str]]:
+    """Stored cell values for `path` that are no longer the current ones.
+
+    Keyed by the column name *after* header translation, so the two passes
+    compose in one order only: rename the columns, then map the cells.
+    """
+    return SNAPSHOT_VALUES if is_snapshot(path) else {}

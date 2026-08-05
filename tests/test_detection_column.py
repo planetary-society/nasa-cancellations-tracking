@@ -71,7 +71,7 @@ def ledger():
 # A snapshot with no NPDV row is treated as a degraded run and skipped, so
 # every fixture below carries one.
 def keep():
-    return row("KEEP-1", "NPDV")
+    return row("KEEP-1", "NASA Procurement Data View")
 
 
 # --- the column ------------------------------------------------------------
@@ -91,8 +91,8 @@ def test_full_rebuild_carries_detection_from_the_snapshot(workdir):
         "consolidated/nasa_x_2026-07-30.csv",
         [
             keep(),
-            row("A-1", "USAspendingTerminations", CONVENIENCE),
-            row("G-1", "LocalUSASpendingMirror", f"{TRUNCATION}; {CLAWBACK}"),
+            row("A-1", "USAspending Terminations", CONVENIENCE),
+            row("G-1", "Local USAspending Mirror", f"{TRUNCATION}; {CLAWBACK}"),
         ],
     )
     bml.build()
@@ -107,11 +107,11 @@ def test_newest_observation_wins(workdir):
     """Refreshed, not write-once: a later mod supersedes earlier evidence."""
     write_snap(
         "consolidated/nasa_x_2026-07-29.csv",
-        [keep(), row("A-1", "USAspendingTerminations", TRUNCATION)],
+        [keep(), row("A-1", "USAspending Terminations", TRUNCATION)],
     )
     write_snap(
         "consolidated/nasa_x_2026-07-30.csv",
-        [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
+        [keep(), row("A-1", "USAspending Terminations", CONVENIENCE)],
     )
     bml.build()
 
@@ -123,9 +123,12 @@ def test_a_blank_day_does_not_erase_a_recorded_detection(workdir):
     the same award, so the sentence that explained it must not be blanked."""
     write_snap(
         "consolidated/nasa_x_2026-07-29.csv",
-        [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
+        [keep(), row("A-1", "USAspending Terminations", CONVENIENCE)],
     )
-    write_snap("consolidated/nasa_x_2026-07-30.csv", [keep(), row("A-1", "NPDV")])
+    write_snap(
+        "consolidated/nasa_x_2026-07-30.csv",
+        [keep(), row("A-1", "NASA Procurement Data View")],
+    )
     bml.build()
 
     assert ledger()["A-1"]["Detection Evidence"] == CONVENIENCE
@@ -139,14 +142,14 @@ def test_snapshots_without_the_column_build_an_empty_detection(workdir):
     legacy = [c for c in COLS if c != "Detection Evidence"]
     write_snap(
         "consolidated/nasa_x_2026-07-29.csv",
-        [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
+        [keep(), row("A-1", "USAspending Terminations", CONVENIENCE)],
         fieldnames=legacy,
     )
     bml.build()
 
     led = ledger()
     assert led["A-1"]["Detection Evidence"] == ""
-    assert led["A-1"]["Tracking Status"] == "listed"
+    assert led["A-1"]["Tracking Status"] == "currently_flagged"
 
 
 def test_a_column_less_snapshot_cannot_clobber_a_populated_detection(workdir):
@@ -154,11 +157,11 @@ def test_a_column_less_snapshot_cannot_clobber_a_populated_detection(workdir):
     after a new one; a missing column reads as blank and blank never wins."""
     write_snap(
         "consolidated/nasa_x_2026-07-29.csv",
-        [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
+        [keep(), row("A-1", "USAspending Terminations", CONVENIENCE)],
     )
     write_snap(
         "consolidated/nasa_x_2026-07-30.csv",
-        [keep(), row("A-1", "USAspendingTerminations")],
+        [keep(), row("A-1", "USAspending Terminations")],
         fieldnames=[c for c in COLS if c != "Detection Evidence"],
     )
     bml.build()
@@ -176,13 +179,13 @@ def test_the_new_column_is_the_only_thing_that_changed(workdir):
         keep(),
         row(
             "A-1",
-            "USAspendingTerminations",
+            "USAspending Terminations",
             CONVENIENCE,
             **{"Current End Date": "2026-05-06"},
         ),
         row(
             "G-1",
-            "LocalUSASpendingMirror",
+            "Local USAspending Mirror",
             CLAWBACK,
             **{"Current Obligated Amount": "448257"},
         ),
@@ -219,7 +222,7 @@ def test_update_path_carries_detection(workdir):
 
     write_snap(
         "consolidated/nasa_x_2026-07-30.csv",
-        [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
+        [keep(), row("A-1", "USAspending Terminations", CONVENIENCE)],
     )
     bml.build(update_only=True)
 
@@ -229,13 +232,13 @@ def test_update_path_carries_detection(workdir):
 def test_update_path_refreshes_a_detection_already_in_the_ledger(workdir):
     write_snap(
         "consolidated/nasa_x_2026-07-29.csv",
-        [keep(), row("A-1", "USAspendingTerminations", TRUNCATION)],
+        [keep(), row("A-1", "USAspending Terminations", TRUNCATION)],
     )
     bml.build()
 
     write_snap(
         "consolidated/nasa_x_2026-07-30.csv",
-        [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
+        [keep(), row("A-1", "USAspending Terminations", CONVENIENCE)],
     )
     bml.build(update_only=True)
 
@@ -245,11 +248,11 @@ def test_update_path_refreshes_a_detection_already_in_the_ledger(workdir):
 def test_both_build_paths_agree_on_detection(workdir):
     write_snap(
         "consolidated/nasa_x_2026-07-29.csv",
-        [keep(), row("A-1", "USAspendingTerminations", TRUNCATION)],
+        [keep(), row("A-1", "USAspending Terminations", TRUNCATION)],
     )
     write_snap(
         "consolidated/nasa_x_2026-07-30.csv",
-        [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
+        [keep(), row("A-1", "USAspending Terminations", CONVENIENCE)],
     )
     bml.build()
     after_full = ledger()
@@ -278,7 +281,7 @@ def test_a_pre_detection_ledger_read_back_on_update_gains_the_column(workdir):
 
     write_snap(
         "consolidated/nasa_x_2026-07-30.csv",
-        [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
+        [keep(), row("A-1", "USAspending Terminations", CONVENIENCE)],
     )
     bml.build(update_only=True)
 

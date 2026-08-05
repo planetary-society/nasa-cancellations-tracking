@@ -14,10 +14,10 @@ that imports the constant it is meant to be checking asserts nothing.
 # Source labels, as written to a snapshot's Source column and accumulated into
 # the ledger's Sources column.
 DOGE = "DOGE"
-NPDV = "NPDV"
-NASA_GRANTS = "NASAGrants"
-LOCAL_MIRROR = "LocalUSASpendingMirror"
-USASPENDING_TERMINATIONS = "USAspendingTerminations"
+NPDV = "NASA Procurement Data View"
+NASA_GRANTS = "NASA Grants"
+LOCAL_MIRROR = "Local USAspending Mirror"
+USASPENDING_TERMINATIONS = "USAspending Terminations"
 
 # Retired 2026-02-25: fpds.gov/ezsearch was shut down and now redirects to
 # SAM.gov. No new row carries this label, but awards found by it are still in

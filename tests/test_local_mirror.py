@@ -17,6 +17,7 @@ import pytest
 
 import local_usaspending_mirror_query as lm
 import search
+import sources
 import termination_vocabulary
 import usaspending_terminations_query as utq
 from contract_query import FINAL_COLUMNS
@@ -500,7 +501,7 @@ def test_an_unconfigured_mirror_is_skipped_and_nothing_else_is(no_db_env, workdi
     snapshot, so the expectation is derived from the registry itself and a
     future sixth source is covered automatically."""
     obj = search.Search.__new__(search.Search)
-    obj.sources = {"LocalUSASpendingMirror": lm.LocalUSASpendingMirrorQuery}
+    obj.sources = {"Local USAspending Mirror": lm.LocalUSASpendingMirrorQuery}
     obj.skipped_sources = set()
     obj.sources_cancellation_data = {}
     obj.unique_award_ids = []
@@ -508,9 +509,9 @@ def test_an_unconfigured_mirror_is_skipped_and_nothing_else_is(no_db_env, workdi
     obj._collect_source_data()
 
     assert obj.sources_cancellation_data == {}
-    assert obj.skipped_sources == {"LocalUSASpendingMirror"}
-    assert set(search.SOURCES) - {"LocalUSASpendingMirror"} == set(search.SOURCES) - {
-        "LocalUSASpendingMirror"
+    assert obj.skipped_sources == {"Local USAspending Mirror"}
+    assert set(search.SOURCES) - {"Local USAspending Mirror"} == set(search.SOURCES) - {
+        "Local USAspending Mirror"
     }
 
 
@@ -518,14 +519,14 @@ def test_a_prior_export_does_not_keep_the_mirror_in_the_run(no_db_env, prior_exp
     """An export is an artifact of an earlier run, never proof the database can
     answer today's query, so it must not rescue the source from being skipped."""
     obj = search.Search.__new__(search.Search)
-    obj.sources = {"LocalUSASpendingMirror": lm.LocalUSASpendingMirrorQuery}
+    obj.sources = {"Local USAspending Mirror": lm.LocalUSASpendingMirrorQuery}
     obj.skipped_sources = set()
     obj.sources_cancellation_data = {}
     obj.unique_award_ids = []
 
     obj._collect_source_data()
 
-    assert obj.skipped_sources == {"LocalUSASpendingMirror"}
+    assert obj.skipped_sources == {"Local USAspending Mirror"}
 
 
 def test_an_unreachable_configured_mirror_is_skipped_during_collection(capsys):
@@ -534,7 +535,7 @@ def test_an_unreachable_configured_mirror_is_skipped_during_collection(capsys):
             raise lm.LocalMirrorUnavailableError("database host is down")
 
     obj = search.Search.__new__(search.Search)
-    obj.sources = {"LocalUSASpendingMirror": OfflineMirror}
+    obj.sources = {"Local USAspending Mirror": OfflineMirror}
     obj.skipped_sources = set()
     obj.sources_cancellation_data = {}
     obj.unique_award_ids = []
@@ -542,14 +543,14 @@ def test_an_unreachable_configured_mirror_is_skipped_during_collection(capsys):
     obj._collect_source_data()
 
     assert obj.sources_cancellation_data == {}
-    assert obj.skipped_sources == {"LocalUSASpendingMirror"}
-    assert "Skipping LocalUSASpendingMirror" in capsys.readouterr().err
+    assert obj.skipped_sources == {"Local USAspending Mirror"}
+    assert f"Skipping {sources.LOCAL_MIRROR}" in capsys.readouterr().err
 
 
 def test_mirror_is_the_last_source_in_the_registry():
     """SOURCES order is first-source-wins for an award's snapshot row, so the
     depth net must stay last and only own rows nobody else found."""
-    assert list(search.SOURCES)[-1] == "LocalUSASpendingMirror"
+    assert list(search.SOURCES)[-1] == "Local USAspending Mirror"
 
 
 def test_instantiating_search_does_not_mutate_the_registry(no_db_env, workdir):
@@ -557,4 +558,4 @@ def test_instantiating_search_does_not_mutate_the_registry(no_db_env, workdir):
     every later Search in the same process, export included."""
     search.Search()
 
-    assert "LocalUSASpendingMirror" in search.SOURCES
+    assert "Local USAspending Mirror" in search.SOURCES

@@ -524,7 +524,7 @@ def _combine(rows) -> pd.DataFrame:
         # not currently cancelled - but its old termination mods keep matching
         # this source's full-window sweep forever, and a rescission's own text
         # ("RESCINDING STOP WORK NOTICE") matches the sweep too. Without this
-        # skip the award re-enters the snapshot daily as "listed" and the
+        # skip the award re-enters the snapshot daily as "currently_flagged" and the
         # ledger can never say reinstated again: measured 2026-07-30, six
         # rescinded grants flipped back to listed on the mirror's first run.
         # A later RE-termination still surfaces, because it becomes the latest

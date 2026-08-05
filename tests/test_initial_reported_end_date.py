@@ -669,7 +669,7 @@ SNAPSHOT_COLUMNS = [
 
 def snapshot_row(aid, end="2026-12-31", initial=""):
     return {
-        "Source": "NPDV",
+        "Source": "NASA Procurement Data View",
         "Award ID": aid,
         "Recipient Name": f"R {aid}",
         "Current End Date": end,

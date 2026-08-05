@@ -6,7 +6,6 @@ hand. It must reproduce most of them and must never contradict one at high
 confidence.
 """
 
-import csv
 import os
 import sys
 from datetime import date
@@ -217,7 +216,7 @@ def test_transaction_baseline_requires_a_complete_numeric_history():
     )
 
 
-def _select_one(first_amount, *, status="listed", baseline=None):
+def _select_one(first_amount, *, status="currently_flagged", baseline=None):
     """Run select_awards over a single award with the given baseline state."""
     aid = "80NSSC25FA315"
     ledger = {
@@ -246,11 +245,11 @@ def _select_one(first_amount, *, status="listed", baseline=None):
 @pytest.mark.parametrize(
     "first_amount, status, baseline",
     [
-        ("0", "listed", None),
+        ("0", "currently_flagged", None),
         # Backfill outranks the excluded-by-design skip.
         ("0.00", "excluded_by_design", None),
         # A bounded migration run leaves untouched rows blank, not `unknown`.
-        ("0", "listed", ""),
+        ("0", "currently_flagged", ""),
     ],
 )
 def test_award_without_a_usable_first_amount_is_selected_for_backfill(

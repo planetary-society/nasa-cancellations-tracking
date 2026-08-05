@@ -415,13 +415,13 @@ def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):
             tier, window = "0_baseline_backfill", 0
         elif prev.get("Automated Verdict") == "unresolved" or prev.get("Last Error"):
             tier, window = "0_retry", 0
-        elif status in ("dropped_pending_review", "source_retired"):
+        elif status in ("unflagged_pending_review", "source_retired"):
             tier, window = "1_unverified", 0
         elif status in ("still_terminated", "closed_out", "descoped"):
             tier, window = "2_verified_dropped", stale_days
-        elif status == "listed" and not rec.get("Claimed By"):
+        elif status == "currently_flagged" and not rec.get("Claimed By"):
             tier, window = "3_listed_inferred", stale_days
-        elif status == "listed":
+        elif status == "currently_flagged":
             tier, window = "4_listed_claimed", stale_days * 3
         else:
             tier, window = "2_verified_dropped", stale_days

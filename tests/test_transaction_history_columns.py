@@ -13,7 +13,7 @@ from tests.helpers import FakeTxn
 TRANSACTION_COLUMNS = bml.TRANSACTION_HISTORY_COLUMNS
 
 
-def row(aid, source="NPDV", **extra):
+def row(aid, source="NASA Procurement Data View", **extra):
     record = {column: "" for column in search.SNAPSHOT_COLUMNS}
     record.update(
         {
@@ -47,7 +47,7 @@ def test_full_build_carries_transaction_history_facts(workdir, write_csv):
             row("KEEP-1"),
             row(
                 "A-1",
-                source="USAspendingTerminations",
+                source="USAspending Terminations",
                 **{
                     "First Action Type": "A",
                     "First Action Type Description": "NEW",
@@ -88,7 +88,7 @@ def test_legacy_snapshot_builds_blank_transaction_fields(workdir, write_csv):
     write_csv(
         "consolidated/nasa_x_2026-07-31.csv",
         legacy_columns,
-        [row("KEEP-1"), row("A-1", source="USAspendingTerminations")],
+        [row("KEEP-1"), row("A-1", source="USAspending Terminations")],
     )
 
     bml.build()
@@ -100,7 +100,7 @@ def test_legacy_snapshot_builds_blank_transaction_fields(workdir, write_csv):
 def test_blank_later_snapshot_does_not_erase_formal_modifications(workdir, write_csv):
     first = row(
         "A-1",
-        source="USAspendingTerminations",
+        source="USAspending Terminations",
         **{
             "Termination Modification Number": "P00002",
             "Termination Action Date": "2025-02-01",

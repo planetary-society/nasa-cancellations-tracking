@@ -190,7 +190,7 @@ def _frame(*rows):
 def test_a_pre_window_declaration_is_dropped_before_it_costs_an_api_call():
     obj = _search_obj()
     kept = obj._enforce_declared_window(
-        "NPDV",
+        "NASA Procurement Data View",
         _frame(
             {"Award ID": "OLD-1", "action_date": "2024-11-01"},
             {"Award ID": "NEW-1", "action_date": "2025-06-01"},
@@ -207,7 +207,7 @@ def test_a_blank_declaration_survives_the_first_gate():
     dropping blanks here would delete such a source's whole contribution."""
     obj = _search_obj()
     kept = obj._enforce_declared_window(
-        "NASAGrants", _frame({"Award ID": "G-1", "action_date": ""})
+        "NASA Grants", _frame({"Award ID": "G-1", "action_date": ""})
     )
     assert kept["Award ID"].tolist() == ["G-1"]
 
@@ -302,7 +302,7 @@ def _check(basis, end_date, action_date="2025-09-02", txn_dates=("2025-09-02",))
     obj = _search_obj()
     row = {"action_date": action_date, "detection_basis": basis}
     ok = obj._passes_tracking_window(
-        "LocalUSASpendingMirror", "A-1", _Award(end_date, txn_dates), row
+        "Local USAspending Mirror", "A-1", _Award(end_date, txn_dates), row
     )
     return ok, obj.window_rejects
 
@@ -367,7 +367,7 @@ def test_geocarb_closeout_does_not_reach_the_snapshot():
     obj = _search_obj()
     row = {"action_date": "2025-09-02", "detection_basis": "inference"}
     admitted = obj._passes_tracking_window(
-        "LocalUSASpendingMirror",
+        "Local USAspending Mirror",
         "80LARC17C0001",
         _Award(end_date="2024-09-30", txn_dates=("2025-09-02",)),
         row,
@@ -384,7 +384,7 @@ def test_rejections_are_reported_never_silent(capsys):
     obj.window_rejects = [
         {
             "Award ID": "80LARC17C0001",
-            "Source": "LocalUSASpendingMirror",
+            "Source": "Local USAspending Mirror",
             "Reason": "inferred cancellation, but period of performance ends 2024-09-30",
         }
     ]

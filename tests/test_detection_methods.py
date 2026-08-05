@@ -48,11 +48,11 @@ def test_historical_snapshot_methods_are_backfilled_for_every_source():
     # track the code.
     cases = {
         "DOGE": dm.EXTERNAL_CLAIM,
-        "NPDV": dm.DESCRIPTION_KEYWORD,
-        "NASAGrants": dm.POP_END_DATE_CHANGE,
+        "NASA Procurement Data View": dm.DESCRIPTION_KEYWORD,
+        "NASA Grants": dm.POP_END_DATE_CHANGE,
         "FPDS": dm.LEGACY_FPDS_KEYWORD,
-        "LocalUSASpendingMirror": dm.LEGACY_LOCAL_MIRROR_SIGNAL,
-        "USAspendingTerminations": dm.LEGACY_USASPENDING_SIGNAL,
+        "Local USAspending Mirror": dm.LEGACY_LOCAL_MIRROR_SIGNAL,
+        "USAspending Terminations": dm.LEGACY_USASPENDING_SIGNAL,
     }
 
     assert {
@@ -77,7 +77,7 @@ def test_detection_text_recovers_a_precise_method_before_legacy_fallback():
     assert (
         dm.infer_snapshot_method(
             {
-                "Source": "LocalUSASpendingMirror",
+                "Source": "Local USAspending Mirror",
                 "Detection Evidence": "End date shortened 365 days from 2027-01-01 to "
                 "2026-01-01 by mod P00002 on 2026-01-01",
             }
@@ -87,7 +87,7 @@ def test_detection_text_recovers_a_precise_method_before_legacy_fallback():
     assert (
         dm.infer_snapshot_method(
             {
-                "Source": "USAspendingTerminations",
+                "Source": "USAspending Terminations",
                 "Detection Evidence": "Terminate-for-convenience action P00002 on 2026-01-01",
             }
         )
@@ -108,12 +108,12 @@ def test_master_ledger_rebuild_populates_every_historical_row(workdir, write_csv
         columns,
         [
             {
-                "Source": "NPDV",
+                "Source": "NASA Procurement Data View",
                 "Award ID": "N-1",
                 "Recipient Name": "NPDV recipient",
             },
             {
-                "Source": "LocalUSASpendingMirror",
+                "Source": "Local USAspending Mirror",
                 "Award ID": "L-1",
                 "Recipient Name": "Mirror recipient",
             },

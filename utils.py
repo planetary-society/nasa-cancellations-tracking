@@ -424,6 +424,7 @@ def read_rows(
     path: str,
     *,
     aliases: dict[str, str] | None = None,
+    values: dict[str, dict[str, str]] | None = None,
     columns=None,
     exact_columns: bool = False,
     errors: str | None = None,
@@ -442,6 +443,10 @@ def read_rows(
     returns None, and whatever was checking that value stops checking it. Pass
     `aliases={}` to read a header exactly as stored.
 
+    `values` does the same for cells whose *contents* are a vocabulary the code
+    renamed - the source labels in a snapshot's Source column. It is keyed by
+    the renamed column, so the header pass has to run first.
+
     `columns` asserts the header carries what the caller needs: by default that
     every named column is present, or with `exact_columns` that the header is
     exactly this list in this order.
@@ -453,6 +458,7 @@ def read_rows(
     """
     if aliases is None:
         aliases = csv_aliases.aliases_for(path)
+    value_aliases = csv_aliases.value_aliases_for(path) if values is None else values
     with open(path, newline="", encoding="utf-8-sig", errors=errors) as fh:
         reader = csv.DictReader(fh)
         names = list(reader.fieldnames or [])
@@ -479,7 +485,18 @@ def read_rows(
         # DictReader keys rows off this attribute, so assigning it before
         # iteration is what renames the columns.
         reader.fieldnames = names
-        return list(reader)
+        rows = list(reader)
+
+    # Cells second, and only for the columns that declare a mapping. Keyed by
+    # the renamed column, so this can only run after the header pass.
+    for column, mapping in value_aliases.items():
+        if column not in names:
+            continue
+        for row in rows:
+            stored = row.get(column)
+            if stored in mapping:
+                row[column] = mapping[stored]
+    return rows
 
 
 def write_sidecar_csv(path: str, fieldnames, rows: dict[str, dict]) -> None:

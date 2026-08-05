@@ -9,8 +9,21 @@ import build_master_ledger
 import sources
 
 
+def cell(*labels):
+    """A Flagged By cell holding these sources, built the way the ledger does.
+
+    Constants rather than literals: these tests are about the split/join, not
+    about what the labels happen to say today. The one test that is genuinely
+    about a stored name spells it out.
+    """
+    return {sources.SOURCES_COLUMN: sources._SEPARATOR.join(labels)}
+
+
 def test_sources_of_splits_the_joined_cell():
-    assert sources.sources_of({"Flagged By": "NPDV; DOGE"}) == ["NPDV", "DOGE"]
+    assert sources.sources_of(cell(sources.NPDV, sources.DOGE)) == [
+        sources.NPDV,
+        sources.DOGE,
+    ]
 
 
 def test_sources_of_handles_absent_empty_and_single():
@@ -34,7 +47,7 @@ def test_has_source_does_not_match_a_label_that_merely_contains_another():
 
 
 def test_has_source_matches_whole_labels():
-    rec = {"Flagged By": "NPDV; FPDS; USAspendingTerminations"}
+    rec = cell(sources.NPDV, sources.FPDS, sources.USASPENDING_TERMINATIONS)
 
     assert sources.has_source(rec, sources.FPDS)
     assert sources.has_source(rec, sources.USASPENDING_TERMINATIONS)
@@ -42,30 +55,30 @@ def test_has_source_matches_whole_labels():
 
 
 def test_add_source_appends_and_stays_idempotent():
-    rec = {"Flagged By": "NPDV"}
+    rec = cell(sources.NPDV)
 
     sources.add_source(rec, sources.DOGE)
-    assert rec["Flagged By"] == "NPDV; DOGE"
+    assert rec == cell(sources.NPDV, sources.DOGE)
 
     sources.add_source(rec, sources.DOGE)
-    assert rec["Flagged By"] == "NPDV; DOGE"
+    assert rec == cell(sources.NPDV, sources.DOGE)
 
 
 def test_add_source_seeds_an_empty_cell_without_a_leading_separator():
-    rec = {"Flagged By": ""}
+    rec = cell()
 
     sources.add_source(rec, sources.NPDV)
 
-    assert rec["Flagged By"] == "NPDV"
+    assert rec == cell(sources.NPDV)
 
 
 def test_add_source_ignores_a_blank_name():
     """A snapshot row with no Source must not append an empty segment."""
-    rec = {"Flagged By": "NPDV"}
+    rec = cell(sources.NPDV)
 
     sources.add_source(rec, "")
 
-    assert rec["Flagged By"] == "NPDV"
+    assert rec == cell(sources.NPDV)
 
 
 def test_a_snapshot_without_a_required_source_is_degraded():

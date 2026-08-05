@@ -14,6 +14,7 @@ import build_master_ledger
 import csv_aliases
 import reverify_awards
 import search
+import sources
 from utils import read_rows
 
 
@@ -55,6 +56,49 @@ def test_every_alias_target_is_a_column_the_code_still_writes(table, live_column
     targets = set(getattr(csv_aliases, table).values())
 
     assert targets <= set(live_columns())
+
+
+def test_source_labels_are_translated_in_archived_snapshot_cells(tmp_path, write_csv):
+    """The renamed vocabulary lives in cells, not just headers.
+
+    Every archived snapshot names its source in the Source *cell*, and those
+    files are never rewritten. Without this, a rebuild replaying them would
+    accumulate the retired labels into Flagged By, and the run-health check
+    that requires a whole-corpus source would match nothing and discard all
+    402 of them.
+    """
+    path = str(tmp_path / "consolidated" / "nasa_contract_cancellations_2025-06-01.csv")
+    os.makedirs(os.path.dirname(path))
+    write_csv(path, ["Award ID", "Source"], [{"Award ID": "A-1", "Source": "NPDV"}])
+
+    assert read_rows(path)[0]["Source"] == sources.NPDV
+
+
+def test_value_translation_is_scoped_to_snapshots(tmp_path, write_csv):
+    """Only the immutable files need it; everything else is rewritten."""
+    path = str(tmp_path / "verification" / "auto_verification.csv")
+    os.makedirs(os.path.dirname(path))
+    write_csv(path, ["Award ID", "Source"], [{"Award ID": "A-1", "Source": "NPDV"}])
+
+    assert read_rows(path)[0]["Source"] == "NPDV"
+
+
+@pytest.mark.parametrize("mapping", csv_aliases.SNAPSHOT_VALUES.values())
+def test_no_current_value_is_also_a_stored_value(mapping):
+    """Same idempotence rule the header tables follow, for the same reason."""
+    assert not set(mapping.values()) & set(mapping)
+
+
+def test_every_translated_label_lands_on_a_source_the_code_still_runs():
+    """The value-side counterpart to the alias-target check above.
+
+    A label translated to a name absent from the registry would read as a
+    source nothing knows about - the archived rows would survive the rebuild
+    but stop matching every check keyed on a source.
+    """
+    targets = set(csv_aliases.SNAPSHOT_VALUES["Source"].values())
+
+    assert targets <= set(search.SOURCES)
 
 
 def test_aliases_are_resolved_from_the_path():

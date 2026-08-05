@@ -92,14 +92,14 @@ def test_an_explicitly_skipped_optional_source_does_not_fail_validation(workdir)
     that it was unavailable; this must not weaken checks for other sources."""
     write(
         "consolidated/prev.csv",
-        rows(10, "DOGE") + rows(5, "LocalUSASpendingMirror", start=100),
+        rows(10, "DOGE") + rows(5, "Local USAspending Mirror", start=100),
     )
     write("consolidated/new.csv", rows(10, "DOGE"))
 
     ok, msgs = vs.validate(
         "consolidated/new.csv",
         "consolidated/prev.csv",
-        skipped_sources={"LocalUSASpendingMirror"},
+        skipped_sources={"Local USAspending Mirror"},
     )
 
     assert ok
@@ -171,8 +171,14 @@ def test_only_excluded_by_design_is_loaded_as_a_reviewed_removal(workdir):
     strict=True,
 )
 def test_partial_source_collapse_masked_by_another_source(workdir):
-    write("consolidated/prev.csv", rows(38, "NPDV") + rows(82, "DOGE", start=1000))
-    write("consolidated/new.csv", rows(3, "NPDV") + rows(117, "DOGE", start=1000))
+    write(
+        "consolidated/prev.csv",
+        rows(38, "NASA Procurement Data View") + rows(82, "DOGE", start=1000),
+    )
+    write(
+        "consolidated/new.csv",
+        rows(3, "NASA Procurement Data View") + rows(117, "DOGE", start=1000),
+    )
     ok, _ = vs.validate("consolidated/new.csv", "consolidated/prev.csv")
     assert not ok, "a 38->3 collapse of one source should be caught"
 

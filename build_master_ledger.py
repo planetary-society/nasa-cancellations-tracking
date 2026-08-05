@@ -20,7 +20,8 @@ Status values (this list is the canonical definition; docs should point here
 rather than restate it).
 
 Assigned by classify():
-    listed          - present in the most recent daily snapshot
+    currently_flagged - still returned by a source in the most recent daily
+                      snapshot
     source_retired  - dropped because the FPDS ezsearch source was retired;
                       award was still terminated as of last observation
     reinstated      - stop-work/termination rescinded (award active again)
@@ -34,7 +35,8 @@ Assigned by classify():
                       (tracking_window.py). This status now covers only the
                       awards admitted before that gate existed; nothing new
                       should arrive here for a window reason.
-    dropped_pending_review - disappeared for an unverified reason; requires
+    unflagged_pending_review - no source flags it any more, for a reason
+                      nobody has established yet; requires
                       manual or API verification (see verification/)
 
 Supplied by verification/dropped_award_status.csv, which overrides classify()
@@ -626,7 +628,7 @@ def classify(aid, rec, desc_history):
             "award was terminated as of last observation",
         )
     return (
-        "dropped_pending_review",
+        "unflagged_pending_review",
         f"Disappeared after {rec['Last Flagged Date']}; verify via USAspending transactions",
     )
 
@@ -739,13 +741,20 @@ def build(update_only=False):
                 rec[column] = facts.get(column, "")
 
         if aid in latest:
-            rec["Tracking Status"], rec["Tracking Status Detail"] = "listed", ""
+            rec["Tracking Status"], rec["Tracking Status Detail"] = (
+                "currently_flagged",
+                "",
+            )
         elif aid in overrides:
             # An adjudicated verdict always applies, even over an existing
             # one: a status assigned months ago must be able to change when a
             # termination is later vacated or rescinded.
             rec["Tracking Status"], rec["Tracking Status Detail"] = overrides[aid]
-        elif rec["Tracking Status"] in ("", "listed", "dropped_pending_review"):
+        elif rec["Tracking Status"] in (
+            "",
+            "currently_flagged",
+            "unflagged_pending_review",
+        ):
             rec["Tracking Status"], rec["Tracking Status Detail"] = classify(
                 aid, rec, desc_history
             )
