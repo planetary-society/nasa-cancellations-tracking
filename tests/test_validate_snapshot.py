@@ -175,3 +175,15 @@ def test_partial_source_collapse_masked_by_another_source(workdir):
     write("consolidated/new.csv", rows(3, "NPDV") + rows(117, "DOGE", start=1000))
     ok, _ = vs.validate("consolidated/new.csv", "consolidated/prev.csv")
     assert not ok, "a 38->3 collapse of one source should be caught"
+
+
+def test_the_two_declarations_of_the_human_verdict_header_agree():
+    """validate_snapshot restates the schema rather than importing it.
+
+    Both modules read verification/dropped_award_status.csv and both now assert
+    its header, so a hand-edit that satisfies one reader and not the other would
+    be caught in a different place depending on which ran first.
+    """
+    import build_master_ledger
+
+    assert vs.REVIEWED_REMOVALS_COLUMNS == build_master_ledger.VERIFICATION_COLUMNS

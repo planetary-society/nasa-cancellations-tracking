@@ -68,14 +68,22 @@ LEDGER = {
     "Auto Verified Date": "Automated Verdict Date",
 }
 
-# verification/dropped_award_status.csv - human-owned, never machine-written.
-# Its Verified Date is a person's, and deliberately not renamed alongside
-# auto_verification.csv's, which is the reason these tables are per-file.
-HUMAN_VERDICTS = {
-    "Status": "Tracking Status",
-}
+# verification/dropped_award_status.csv - human-owned, never machine-written,
+# and migrated in place, so there is nothing left to translate.
+#
+# Empty on purpose rather than deleted: this file is the one a person types
+# into, and an alias here would be pure cost. It would mean the header they see
+# says one thing while all three readers subscript another, and it would
+# permanently reserve the generic name "Status" - the table invariants forbid a
+# stored name from ever becoming a current one. Its Verified Date stays a
+# person's timestamp and is deliberately NOT renamed alongside
+# auto_verification.csv's, which is why these tables are per-file at all.
+HUMAN_VERDICTS: dict[str, str] = {}
 
 # verification/auto_verification.csv - reverify_awards.py's screening verdicts.
+# Migrated in place too, but kept: reverify_awards rewrites this file wholesale
+# on every run, so a run from pre-migration code can still put the old header
+# back until that version is gone.
 AUTO_VERDICTS = {
     "Auto Status": "Automated Verdict",
     "Verified Date": "Automated Verdict Date",

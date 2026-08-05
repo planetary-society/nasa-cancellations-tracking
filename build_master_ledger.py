@@ -71,6 +71,11 @@ LEDGER_PATH = os.path.join(CONSOLIDATED_DIR, "master_ledger.csv")
 # Human-curated, evidence-backed statuses. Owned by a person; no automation in
 # this repo ever writes to it, and it wins every precedence contest.
 VERIFICATION_PATH = os.path.join("verification", "dropped_award_status.csv")
+# Declared so the three readers assert the header instead of discovering a
+# hand-edit mistake as a KeyError from somewhere deep in the build. Verified
+# Date here is the date a *person* recorded the verdict, unrelated to
+# auto_verification.csv's column of the same name.
+VERIFICATION_COLUMNS = ["Award ID", "Tracking Status", "Verified Date", "Evidence"]
 
 # Machine-written screening verdicts from reverify_awards.py.
 AUTO_VERIFICATION_PATH = os.path.join("verification", "auto_verification.csv")
@@ -574,7 +579,7 @@ def load_verification(ledger=None):
         )
 
     if os.path.exists(VERIFICATION_PATH):
-        for r in read_rows(VERIFICATION_PATH):
+        for r in read_rows(VERIFICATION_PATH, columns=VERIFICATION_COLUMNS):
             overrides[r["Award ID"]] = (r["Tracking Status"], r["Evidence"])
     return overrides
 

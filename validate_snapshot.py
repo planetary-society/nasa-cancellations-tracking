@@ -48,6 +48,10 @@ DISAPPEARANCE_LOG_COLUMNS = [
 ]
 QUARANTINE_DIR = os.path.join("consolidated", "quarantine")
 REVIEWED_REMOVALS_PATH = os.path.join("verification", "dropped_award_status.csv")
+# Same file build_master_ledger calls VERIFICATION_PATH, restated rather than
+# imported to keep this module free of the ledger builder, which imports half
+# the repo. tests/test_validate_snapshot.py asserts the two agree.
+REVIEWED_REMOVALS_COLUMNS = ["Award ID", "Tracking Status", "Verified Date", "Evidence"]
 
 
 def _source_counts(rows):
@@ -60,7 +64,7 @@ def load_reviewed_removals(path=REVIEWED_REMOVALS_PATH):
         return set()
     return {
         row["Award ID"]
-        for row in read_rows(path)
+        for row in read_rows(path, columns=REVIEWED_REMOVALS_COLUMNS)
         if row.get("Award ID") and row.get("Tracking Status") == "excluded_by_design"
     }
 

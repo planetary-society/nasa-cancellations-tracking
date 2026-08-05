@@ -58,6 +58,7 @@ from award_transaction_facts import (
 from build_master_ledger import (
     AUTO_VERIFICATION_PATH,
     LEDGER_PATH,
+    VERIFICATION_COLUMNS,
     VERIFICATION_PATH,
     load_auto_verification,
 )
@@ -367,7 +368,8 @@ def classify_transactions(txns, *, is_contract, ledger_row):
 def load_human_verdicts():
     if not os.path.exists(VERIFICATION_PATH):
         return {}
-    return {r["Award ID"]: r["Tracking Status"] for r in read_rows(VERIFICATION_PATH)}
+    rows = read_rows(VERIFICATION_PATH, columns=VERIFICATION_COLUMNS)
+    return {r["Award ID"]: r["Tracking Status"] for r in rows}
 
 
 def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):
