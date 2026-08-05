@@ -13,15 +13,55 @@ import pandas as pd
 from detection_methods import DETECTION_METHODS
 
 
-def load_snapshot(path: str) -> dict[str, dict]:
+def read_rows(
+    path: str,
+    *,
+    aliases: dict[str, str] | None = None,
+    encoding: str = "utf-8",
+    errors: str | None = None,
+) -> tuple[list[str], list[dict]]:
+    """Read a repo-owned CSV, returning (column names, rows).
+
+    The single point at which a stored header is translated to the vocabulary
+    the code uses. `aliases` maps an on-disk column name to the current one;
+    it is applied to `reader.fieldnames` *before* the rows are read, so
+    DictReader keys every row by the current name and no caller ever sees, or
+    has to rewrite, a stored name.
+
+    Every reader of a file this repo owns goes through here. That matters less
+    for the reading than for the renaming: a column name that lives in one
+    loader can be changed in one place, whereas nine hand-rolled DictReaders
+    drift, and the ones that drift silently - `row.get("Source", "?")` in
+    validate_snapshot - turn a guard into a no-op rather than an error.
+    """
+    with open(path, newline="", encoding=encoding, errors=errors) as fh:
+        reader = csv.DictReader(fh)
+        names = list(reader.fieldnames or [])
+        if aliases:
+            names = [aliases.get(name, name) for name in names]
+            collisions = {n for n in names if names.count(n) > 1}
+            if collisions:
+                raise RuntimeError(
+                    f"{path}: alias map collapses distinct columns onto "
+                    f"{', '.join(sorted(collisions))}; rows would silently lose data."
+                )
+            # DictReader keys rows off this attribute, so assigning it here -
+            # before iteration - is what renames the columns.
+            reader.fieldnames = names
+        return names, list(reader)
+
+
+def load_snapshot(
+    path: str, *, aliases: dict[str, str] | None = None
+) -> dict[str, dict]:
     """
     Load a consolidated snapshot CSV into a dict keyed by Award ID.
 
     Rows without an Award ID are skipped. Shared by validate_snapshot.py and
     build_master_ledger.py so both agree on the snapshot read contract.
     """
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        return {r["Award ID"]: r for r in csv.DictReader(fh) if r.get("Award ID")}
+    _, rows = read_rows(path, aliases=aliases, encoding="utf-8", errors="replace")
+    return {r["Award ID"]: r for r in rows if r.get("Award ID")}
 
 
 def find_most_recent_csv(

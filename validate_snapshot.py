@@ -28,7 +28,7 @@ import shutil
 from collections import Counter
 from datetime import datetime
 
-from contract_query import load_snapshot
+from contract_query import load_snapshot, read_rows
 
 MAX_ROW_DROP = 3  # max net rows lost vs. previous snapshot before quarantine
 DISAPPEARANCE_LOG = os.path.join("verification", "disappearance_log.csv")
@@ -44,12 +44,11 @@ def load_reviewed_removals(path=REVIEWED_REMOVALS_PATH):
     """Awards a human explicitly approved for methodology removal."""
     if not os.path.exists(path):
         return set()
-    with open(path, newline="", encoding="utf-8-sig") as fh:
-        return {
-            row["Award ID"]
-            for row in csv.DictReader(fh)
-            if row.get("Award ID") and row.get("Status") == "excluded_by_design"
-        }
+    return {
+        row["Award ID"]
+        for row in read_rows(path, encoding="utf-8-sig")[1]
+        if row.get("Award ID") and row.get("Status") == "excluded_by_design"
+    }
 
 
 def log_disappearances(new_rows, old_rows, run_date):

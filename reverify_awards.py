@@ -61,7 +61,7 @@ from build_master_ledger import (
     VERIFICATION_PATH,
     load_auto_verification,
 )
-from contract_query import load_snapshot
+from contract_query import load_snapshot, read_rows
 from termination_vocabulary import (
     CLOSEOUT_TEXT,
     is_cause,
@@ -367,8 +367,10 @@ def classify_transactions(txns, *, is_contract, ledger_row):
 def load_human_verdicts():
     if not os.path.exists(VERIFICATION_PATH):
         return {}
-    with open(VERIFICATION_PATH, encoding="utf-8") as fh:
-        return {r["Award ID"]: r["Status"] for r in csv.DictReader(fh)}
+    return {
+        r["Award ID"]: r["Status"]
+        for r in read_rows(VERIFICATION_PATH, encoding="utf-8")[1]
+    }
 
 
 def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):

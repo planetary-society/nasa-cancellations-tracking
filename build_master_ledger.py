@@ -58,7 +58,7 @@ from datetime import date
 
 import award_transaction_facts
 import initial_end_dates
-from contract_query import load_snapshot
+from contract_query import load_snapshot, read_rows
 from detection_methods import DETECTION_METHODS, infer_snapshot_method
 from termination_vocabulary import is_cause, is_reversal, is_vacatur
 from utils import canonical_usaspending_url
@@ -500,45 +500,42 @@ def load_initial_end_dates():
     if not os.path.exists(INITIAL_END_DATES_PATH):
         return {}
 
-    with open(INITIAL_END_DATES_PATH, encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        missing = set(INITIAL_END_DATE_COLUMNS) - set(reader.fieldnames or [])
-        if missing:
+    names, raw_rows = read_rows(INITIAL_END_DATES_PATH, encoding="utf-8")
+    missing = set(INITIAL_END_DATE_COLUMNS) - set(names)
+    if missing:
+        raise RuntimeError(
+            f"{INITIAL_END_DATES_PATH} is missing column(s): "
+            f"{', '.join(sorted(missing))}"
+        )
+    rows = {}
+    for row in raw_rows:
+        aid = (row.get("Award ID") or "").strip()
+        if not aid:
+            raise RuntimeError(f"{INITIAL_END_DATES_PATH} contains a blank Award ID")
+        if aid in rows:
             raise RuntimeError(
-                f"{INITIAL_END_DATES_PATH} is missing column(s): "
-                f"{', '.join(sorted(missing))}"
+                f"{INITIAL_END_DATES_PATH} contains duplicate Award ID {aid!r}"
             )
-        rows = {}
-        for row in reader:
-            aid = (row.get("Award ID") or "").strip()
-            if not aid:
+        status = (row.get("Lookup Status") or "").strip()
+        if status not in INITIAL_END_DATE_STATUSES:
+            raise RuntimeError(
+                f"{INITIAL_END_DATES_PATH} has invalid Lookup Status "
+                f"{status!r} for {aid}"
+            )
+        initial = (row.get("Initial Reported End Date") or "").strip()
+        if status == "resolved" and not initial:
+            raise RuntimeError(
+                f"{INITIAL_END_DATES_PATH} marks {aid} resolved without a date"
+            )
+        if initial:
+            try:
+                date.fromisoformat(initial)
+            except ValueError as exc:
                 raise RuntimeError(
-                    f"{INITIAL_END_DATES_PATH} contains a blank Award ID"
-                )
-            if aid in rows:
-                raise RuntimeError(
-                    f"{INITIAL_END_DATES_PATH} contains duplicate Award ID {aid!r}"
-                )
-            status = (row.get("Lookup Status") or "").strip()
-            if status not in INITIAL_END_DATE_STATUSES:
-                raise RuntimeError(
-                    f"{INITIAL_END_DATES_PATH} has invalid Lookup Status "
-                    f"{status!r} for {aid}"
-                )
-            initial = (row.get("Initial Reported End Date") or "").strip()
-            if status == "resolved" and not initial:
-                raise RuntimeError(
-                    f"{INITIAL_END_DATES_PATH} marks {aid} resolved without a date"
-                )
-            if initial:
-                try:
-                    date.fromisoformat(initial)
-                except ValueError as exc:
-                    raise RuntimeError(
-                        f"{INITIAL_END_DATES_PATH} has invalid date {initial!r} for {aid}"
-                    ) from exc
-            rows[aid] = dict(row)
-        return rows
+                    f"{INITIAL_END_DATES_PATH} has invalid date {initial!r} for {aid}"
+                ) from exc
+        rows[aid] = dict(row)
+    return rows
 
 
 def load_verification(ledger=None):
@@ -564,9 +561,8 @@ def load_verification(ledger=None):
         )
 
     if os.path.exists(VERIFICATION_PATH):
-        with open(VERIFICATION_PATH, encoding="utf-8") as fh:
-            for r in csv.DictReader(fh):
-                overrides[r["Award ID"]] = (r["Status"], r["Evidence"])
+        for r in read_rows(VERIFICATION_PATH, encoding="utf-8")[1]:
+            overrides[r["Award ID"]] = (r["Status"], r["Evidence"])
     return overrides
 
 
@@ -624,14 +620,13 @@ def build(update_only=False):
     ledger = {}
     latest_claim = {}  # award id -> most recently seen claim values
     if update_only and os.path.exists(LEDGER_PATH):
-        with open(LEDGER_PATH, encoding="utf-8") as fh:
-            for r in csv.DictReader(fh):
-                ledger[r["Award ID"]] = dict(r)
-                # Reseed from what was already recorded, so a claim revised on
-                # an earlier day is not appended again on every later run.
-                latest_claim[r["Award ID"]] = parse_claim_revisions(
-                    r.get("Claim Revisions", "")
-                )
+        for r in read_rows(LEDGER_PATH, encoding="utf-8")[1]:
+            ledger[r["Award ID"]] = dict(r)
+            # Reseed from what was already recorded, so a claim revised on
+            # an earlier day is not appended again on every later run.
+            latest_claim[r["Award ID"]] = parse_claim_revisions(
+                r.get("Claim Revisions", "")
+            )
         files = files[-1:]
 
     skipped = []

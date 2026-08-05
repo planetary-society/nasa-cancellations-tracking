@@ -1,4 +1,3 @@
-import csv
 import logging
 import os
 import shutil
@@ -13,7 +12,12 @@ from usaspending.exceptions import USASpendingError
 import award_period_change_facts
 import award_transaction_facts as transaction_facts
 import build_master_ledger
-from contract_query import csv_files_equal, find_most_recent_csv, validate_source_frame
+from contract_query import (
+    csv_files_equal,
+    find_most_recent_csv,
+    read_rows,
+    validate_source_frame,
+)
 from doge_search import DOGEQuery
 from initial_end_dates import (
     TRANSIENT_STATUSES,
@@ -510,13 +514,14 @@ class Search:
         if cache is None:
             cache = []
             if os.path.exists(build_master_ledger.LEDGER_PATH):
-                with open(build_master_ledger.LEDGER_PATH, encoding="utf-8") as fh:
-                    for row in csv.DictReader(fh):
-                        aid = (row.get("Award ID") or "").strip()
-                        if aid:
-                            cache.append(
-                                (aid, _generated_id_from_url(row.get("URL") or ""))
-                            )
+                for row in read_rows(build_master_ledger.LEDGER_PATH, encoding="utf-8")[
+                    1
+                ]:
+                    aid = (row.get("Award ID") or "").strip()
+                    if aid:
+                        cache.append(
+                            (aid, _generated_id_from_url(row.get("URL") or ""))
+                        )
             self._ledger_award_ids = cache
         return cache
 
@@ -915,8 +920,7 @@ class Search:
         """Ledger rows whose status means 'nobody has explained this yet'."""
         if not os.path.exists(build_master_ledger.LEDGER_PATH):
             return
-        with open(build_master_ledger.LEDGER_PATH, encoding="utf-8") as fh:
-            rows = list(csv.DictReader(fh))
+        rows = read_rows(build_master_ledger.LEDGER_PATH, encoding="utf-8")[1]
 
         pending = [r for r in rows if r["Status"] in UNEXPLAINED_STATUSES]
         if pending:

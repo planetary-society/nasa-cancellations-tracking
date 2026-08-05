@@ -9,12 +9,12 @@ shared methodology and the atomic sidecar used by both search.py and
 reverify_awards.py.
 """
 
-import csv
 import os
 import sys
 from dataclasses import dataclass
 from datetime import date
 
+from contract_query import read_rows
 from utils import natural_modification_key, write_sidecar_csv
 
 PAGE_SIZE = 5000
@@ -241,40 +241,37 @@ def load_facts(path: str = SIDECAR_PATH) -> dict[str, dict]:
     """Load and strictly validate the machine-owned sidecar."""
     if not os.path.exists(path):
         return {}
-    with open(path, encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        missing = set(SIDECAR_COLUMNS) - set(reader.fieldnames or [])
-        if missing:
+    names, raw_rows = read_rows(path, encoding="utf-8")
+    missing = set(SIDECAR_COLUMNS) - set(names)
+    if missing:
+        raise RuntimeError(f"{path} is missing column(s): {', '.join(sorted(missing))}")
+    rows = {}
+    for row in raw_rows:
+        aid = (row.get("Award ID") or "").strip()
+        if not aid:
+            raise RuntimeError(f"{path} contains a blank Award ID")
+        if aid in rows:
+            raise RuntimeError(f"{path} contains duplicate Award ID {aid!r}")
+        try:
+            count = int(row.get("Transaction Count") or "")
+        except ValueError as exc:
             raise RuntimeError(
-                f"{path} is missing column(s): {', '.join(sorted(missing))}"
-            )
-        rows = {}
-        for row in reader:
-            aid = (row.get("Award ID") or "").strip()
-            if not aid:
-                raise RuntimeError(f"{path} contains a blank Award ID")
-            if aid in rows:
-                raise RuntimeError(f"{path} contains duplicate Award ID {aid!r}")
+                f"{path} has invalid Transaction Count for {aid}"
+            ) from exc
+        if count < 1:
+            raise RuntimeError(f"{path} has empty transaction history for {aid}")
+        for column in DATE_COLUMNS:
+            value = (row.get(column) or "").strip()
+            if not value:
+                continue
             try:
-                count = int(row.get("Transaction Count") or "")
+                date.fromisoformat(value)
             except ValueError as exc:
                 raise RuntimeError(
-                    f"{path} has invalid Transaction Count for {aid}"
+                    f"{path} has invalid {column} {value!r} for {aid}"
                 ) from exc
-            if count < 1:
-                raise RuntimeError(f"{path} has empty transaction history for {aid}")
-            for column in DATE_COLUMNS:
-                value = (row.get(column) or "").strip()
-                if not value:
-                    continue
-                try:
-                    date.fromisoformat(value)
-                except ValueError as exc:
-                    raise RuntimeError(
-                        f"{path} has invalid {column} {value!r} for {aid}"
-                    ) from exc
-            rows[aid] = {column: row.get(column, "") for column in SIDECAR_COLUMNS}
-        return rows
+        rows[aid] = {column: row.get(column, "") for column in SIDECAR_COLUMNS}
+    return rows
 
 
 def write_facts(rows: dict[str, dict], path: str = SIDECAR_PATH) -> None:

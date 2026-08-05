@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from award_period import SHORTENING_MIN_DAYS, significant_shortening
+from contract_query import read_rows
 from tracking_window import TRACKING_WINDOW_START_DATE, as_date
 from utils import natural_modification_key
 
@@ -198,20 +199,17 @@ def load_facts(path: str = FACTS_PATH) -> dict[str, dict[str, str]]:
     """Load validated qualifying facts, keyed by native award ID."""
     if not os.path.exists(path):
         return {}
-    with open(path, newline="", encoding="utf-8-sig") as fh:
-        reader = csv.DictReader(fh)
-        if reader.fieldnames != FACT_COLUMNS:
-            raise RuntimeError(
-                f"{path} has columns {reader.fieldnames}; expected {FACT_COLUMNS}"
-            )
-        facts = {}
-        for raw in reader:
-            row = _validate(raw)
-            award_id = row["Award ID"]
-            if award_id in facts:
-                raise RuntimeError(f"{path} contains duplicate Award ID {award_id}")
-            facts[award_id] = row
-        return facts
+    names, raw_rows = read_rows(path, encoding="utf-8-sig")
+    if names != FACT_COLUMNS:
+        raise RuntimeError(f"{path} has columns {names}; expected {FACT_COLUMNS}")
+    facts = {}
+    for raw in raw_rows:
+        row = _validate(raw)
+        award_id = row["Award ID"]
+        if award_id in facts:
+            raise RuntimeError(f"{path} contains duplicate Award ID {award_id}")
+        facts[award_id] = row
+    return facts
 
 
 def detection_text(row: dict) -> str:
