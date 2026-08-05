@@ -458,7 +458,26 @@ class Search:
             frame.at[index, "action_date"] = fact["Action Date"]
             frame.at[index, "detection_basis"] = "inference"
 
-        self.sources_cancellation_data[source] = frame.loc[keep_indices].copy()
+        kept = frame.loc[keep_indices].copy()
+        if kept.empty and sources.LOCAL_MIRROR in self.skipped_sources:
+            # Nothing could be confirmed, and the only thing that can produce a
+            # confirmation did not run. That is an unknown, not a zero, and the
+            # difference decides whether the snapshot is publishable: reported
+            # as zero it trips the source-presence and shrinkage guards and
+            # quarantines every run for as long as the mirror is away, which
+            # freezes the ledger without saying so anywhere a reader can see.
+            # Declared skipped, it degrades exactly as the mirror it depends on
+            # already does. A partial confirmation is NOT a skip - prior facts
+            # outliving the mirror is the documented behaviour above.
+            self.skipped_sources.add(source)
+            print(
+                f"Skipping {source}: no period-change facts are available to "
+                f"confirm its {len(rejected)} candidate(s), and "
+                f"{sources.LOCAL_MIRROR} - their only producer - was skipped "
+                f"this run.",
+                file=sys.stderr,
+            )
+        self.sources_cancellation_data[source] = kept
 
         # These candidates were needed for enrichment so the comparison could
         # be made, but after rejection they are no longer current source awards

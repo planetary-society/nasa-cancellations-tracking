@@ -589,6 +589,25 @@ def load_initial_end_dates(path=INITIAL_END_DATES_PATH):
     return rows
 
 
+def load_human_overrides():
+    """The hand-curated verdicts alone, as {award_id: (status, evidence)}.
+
+    Kept separate from the machine ones because they hold a different rank.
+    A human verdict wins every precedence contest, including against an award
+    a source is still emitting today: a person who has already ruled that a
+    2023 cancellation is out of scope does not need to re-rule it every time
+    the mirror re-detects the same closeout modification. A machine verdict
+    does not outrank presence - it speaks only for awards that have left the
+    snapshot, which is what keeps automation from pruning a live detection.
+    """
+    if not os.path.exists(VERIFICATION_PATH):
+        return {}
+    return {
+        r["Award ID"]: (r["Tracking Status"], r["Evidence"])
+        for r in read_rows(VERIFICATION_PATH, columns=VERIFICATION_COLUMNS)
+    }
+
+
 def load_verification(ledger=None):
     """Verified statuses for dropped awards, as {award_id: (status, evidence)}.
 
@@ -611,9 +630,7 @@ def load_verification(ledger=None):
             f"[auto {r.get('Automated Verdict Date', '')}] {r.get('Evidence', '')}",
         )
 
-    if os.path.exists(VERIFICATION_PATH):
-        for r in read_rows(VERIFICATION_PATH, columns=VERIFICATION_COLUMNS):
-            overrides[r["Award ID"]] = (r["Tracking Status"], r["Evidence"])
+    overrides.update(load_human_overrides())
     return overrides
 
 
@@ -757,6 +774,7 @@ def build(update_only=False):
     initial_end_dates = load_initial_end_dates()
     transaction_facts = award_transaction_facts.load_facts()
     overrides = load_verification(ledger)
+    human_overrides = load_human_overrides()
 
     for aid, rec in ledger.items():
         if not rec.get("Primary Detection Method"):
@@ -782,15 +800,28 @@ def build(update_only=False):
             for column in award_transaction_facts.LEDGER_OVERLAY_COLUMNS:
                 rec[column] = facts.get(column, "")
 
-        if aid in latest:
+        if aid in human_overrides:
+            # A human verdict outranks everything, presence in today's
+            # snapshot included. It used to sit below the branch above, which
+            # made this comment false: 25 of 41 adjudications were discarded
+            # because a source kept re-emitting the award, and the same
+            # assignment blanked Tracking Status Detail, so the evidence for
+            # the ruling vanished with it. Fourteen of those were awards a
+            # person had explicitly ruled out of scope as pre-window
+            # closeouts - the exact failure the tracking window exists to
+            # prevent - republished as active cancellations.
+            rec["Tracking Status"], rec["Tracking Status Detail"] = human_overrides[aid]
+        elif aid in latest:
             rec["Tracking Status"], rec["Tracking Status Detail"] = (
                 "currently_flagged",
                 "",
             )
         elif aid in overrides:
-            # An adjudicated verdict always applies, even over an existing
-            # one: a status assigned months ago must be able to change when a
-            # termination is later vacated or rescinded.
+            # A machine verdict applies only once an award has left the
+            # snapshot, which is what stops automation pruning a live
+            # detection. Within that scope it always applies, even over an
+            # existing status: a verdict assigned months ago must be able to
+            # change when a termination is later vacated or rescinded.
             rec["Tracking Status"], rec["Tracking Status Detail"] = overrides[aid]
         elif rec["Tracking Status"] in (
             "",

@@ -203,3 +203,83 @@ def test_a_claimed_award_may_still_be_refined_within_the_retain_set(workdir):
     )
     ledger = {"A-7": {"Claimed By": "DOGE"}}
     assert bml.load_verification(ledger)["A-7"][0] == "closed_out"
+
+
+def snapshot_row(aid, **extra):
+    import search
+
+    record = {column: "" for column in search.SNAPSHOT_COLUMNS}
+    record.update(
+        {
+            "Source": "NASA Procurement Data View",
+            "Award ID": aid,
+            "Recipient Name": f"Recipient {aid}",
+            "Award or Action Description": "terminate for convenience",
+        }
+    )
+    record.update(extra)
+    return record
+
+
+def built_ledger():
+    return {r["Award ID"]: r for r in bml.read_rows(bml.LEDGER_PATH)}
+
+
+def test_a_human_verdict_outranks_presence_in_todays_snapshot(workdir, write_csv):
+    """The invariant README states and nothing pinned.
+
+    An award a person ruled out of scope is still emitted every day by the
+    source that keeps re-detecting the same closeout modification. When
+    snapshot presence won, 25 of 41 adjudications were discarded and their
+    evidence blanked - 14 of them pre-window awards republished as active
+    cancellations.
+    """
+    import search
+
+    write_csv(
+        "consolidated/nasa_x_2026-07-31.csv",
+        search.SNAPSHOT_COLUMNS,
+        [snapshot_row("EXCLUDED-1"), snapshot_row("PLAIN-1")],
+    )
+    write_csv(
+        bml.VERIFICATION_PATH,
+        bml.VERIFICATION_COLUMNS,
+        [
+            {
+                "Award ID": "EXCLUDED-1",
+                "Tracking Status": "excluded_by_design",
+                "Verified Date": "2026-07-31",
+                "Evidence": "Pre-window: closeout of a 2023 decision.",
+            }
+        ],
+    )
+
+    bml.build()
+
+    records = built_ledger()
+    assert records["EXCLUDED-1"]["Tracking Status"] == "excluded_by_design"
+    # The evidence for the ruling must survive with it; the old code blanked
+    # Tracking Status Detail in the same assignment that overwrote the status.
+    assert "Pre-window" in records["EXCLUDED-1"]["Tracking Status Detail"]
+    assert records["PLAIN-1"]["Tracking Status"] == "currently_flagged"
+
+
+def test_a_machine_verdict_does_not_outrank_presence(workdir, write_csv):
+    """Only humans outrank presence. Automation applies once an award has left
+    the snapshot, which is what stops it pruning a live detection."""
+    import search
+
+    write_csv(
+        "consolidated/nasa_x_2026-07-31.csv",
+        search.SNAPSHOT_COLUMNS,
+        [snapshot_row("LISTED-1")],
+    )
+    write_csv(
+        bml.AUTO_VERIFICATION_PATH,
+        reverify_awards.AUTO_COLUMNS,
+        [auto_row("LISTED-1", "continued")],
+    )
+
+    bml.build()
+
+    assert built_ledger()["LISTED-1"]["Tracking Status"] == "currently_flagged"

@@ -11,6 +11,7 @@ import award_period_change_facts as period_facts
 import local_usaspending_mirror_query as mirror
 import reverify_awards
 import search
+import sources
 from tests.helpers import FakeTxn
 
 
@@ -203,8 +204,11 @@ def _write_default_facts(rows):
         writer.writerows(rows)
 
 
-def _search_obj(nasa_ids, *, other_source_ids=()):
+def _search_obj(nasa_ids, *, other_source_ids=(), skipped_sources=()):
     obj = search.Search.__new__(search.Search)
+    # Real state, not test scaffolding: the filter consults it to tell
+    # "no candidate qualified" from "nothing could be checked".
+    obj.skipped_sources = set(skipped_sources)
     obj.sources_cancellation_data = {
         "NASA Grants": pd.DataFrame(
             {
@@ -295,3 +299,55 @@ def test_mirror_sql_encodes_the_transaction_level_methodology():
     assert "ROW_NUMBER()" in sql
     assert "days_truncated DESC" in sql
     assert "max_end_ever" not in sql
+
+
+def test_grants_degrades_to_skipped_when_nothing_can_confirm_it(workdir, capsys):
+    """An unconfirmable source is unknown, not zero.
+
+    Only the local mirror writes period-change facts. With the mirror away and
+    no facts on file, every candidate is rejected - and a source reported as
+    zero trips validate_snapshot's presence and shrinkage guards, quarantining
+    every run until the mirror returns. Declaring it skipped degrades the way
+    the mirror it depends on already does.
+    """
+    _write_default_facts([])
+    obj = _search_obj(
+        ["UNCONFIRMED-1", "UNCONFIRMED-2"],
+        skipped_sources=[sources.LOCAL_MIRROR],
+    )
+
+    obj._filter_nasa_grant_period_changes()
+
+    assert sources.NASA_GRANTS in obj.skipped_sources
+    assert obj.sources_cancellation_data[sources.NASA_GRANTS].empty
+    assert sources.LOCAL_MIRROR in capsys.readouterr().err
+
+
+def test_grants_is_not_skipped_when_the_mirror_ran_and_confirmed_nothing(workdir):
+    """A mirror that ran and found no qualifying transaction is a real zero.
+
+    Suppressing the guards here would hide the failure they exist to catch.
+    """
+    _write_default_facts([])
+    obj = _search_obj(["UNCONFIRMED-1"])
+
+    obj._filter_nasa_grant_period_changes()
+
+    assert sources.NASA_GRANTS not in obj.skipped_sources
+
+
+def test_a_partial_confirmation_is_not_a_skip(workdir):
+    """Prior facts outliving an absent mirror is the documented behaviour, so
+    a run that still confirms something has produced real rows."""
+    _write_default_facts([fact_row("CONFIRMED")])
+    obj = _search_obj(
+        ["CONFIRMED", "UNCONFIRMED"],
+        skipped_sources=[sources.LOCAL_MIRROR],
+    )
+
+    obj._filter_nasa_grant_period_changes()
+
+    assert sources.NASA_GRANTS not in obj.skipped_sources
+    assert obj.sources_cancellation_data[sources.NASA_GRANTS]["Award ID"].tolist() == [
+        "CONFIRMED"
+    ]
