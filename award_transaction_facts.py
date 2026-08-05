@@ -14,6 +14,7 @@ import sys
 from dataclasses import dataclass
 from datetime import date
 
+from termination_vocabulary import is_reversal, is_termination
 from utils import natural_modification_key, read_rows, write_sidecar_csv
 
 PAGE_SIZE = 5000
@@ -29,8 +30,10 @@ TRANSACTION_HISTORY_COLUMNS = (
     "Latest Action Type",
     "Latest Action Type Description",
     "Latest Action Date",
-    "Termination Modification Number",
-    "Termination Action Date",
+    # Named for its evidence because it is legitimately blank on many awards
+    # this tracker has verified as terminated - see terminating_index.
+    "Action Code Termination Modification",
+    "Action Code Termination Date",
     "Closeout Modification Number",
     "Closeout Action Date",
 )
@@ -46,7 +49,7 @@ SIDECAR_COLUMNS = (
 DATE_COLUMNS = (
     "First Action Date",
     "Latest Action Date",
-    "Termination Action Date",
+    "Action Code Termination Date",
     "Closeout Action Date",
     "Last Checked Date",
 )
@@ -129,20 +132,63 @@ class TransactionHistoryFacts:
     closeout: object | None
 
 
+def terminating_index(ordered, *, is_contract, accept_text_evidence):
+    """Index of the last transaction that terminated the award, or None.
+
+    Two policies, deliberately side by side in one function because both are
+    published and they disagree on roughly a quarter of tracked awards. Two
+    copies of this scan in two modules is how they drifted apart unnoticed.
+
+    `accept_text_evidence=False` is the formal FPDS record: a modification
+    carrying a termination action code. Citable straight against the source
+    and independent of any text vocabulary, so it is the one the persistent
+    sidecar stores - but it is blank whenever NASA recorded the termination
+    under a generic code, which is common.
+
+    `accept_text_evidence=True` also accepts a generic code whose description
+    asserts a termination, and skips rescissions so a reversed modification
+    cannot become the anchor. This is the rule behind the automated verdict.
+    It does not accept termination for cause, which reverify_awards excludes
+    by methodology before it ever asks this question.
+
+    Neither is a superset of the other, and `ordered` must already be sorted
+    by transaction_sort_key: both take the LAST match, so order decides.
+    """
+    found = None
+    for index, txn in enumerate(ordered):
+        kind = action_kind(txn, is_contract)
+        if accept_text_evidence:
+            description = transaction_value(txn, "award_description")
+            if is_reversal(description):
+                continue
+            terminates = kind == "termination_convenience" or is_termination(
+                description
+            )
+        else:
+            terminates = kind in {"termination_convenience", "termination_cause"}
+        if terminates:
+            found = index
+    return found
+
+
 def transaction_history_facts(txns, *, is_contract):
     """Return ordered endpoints and most recent formal event transactions."""
     ordered = sorted(txns, key=transaction_sort_key)
     if not ordered:
         return TransactionHistoryFacts(None, None, None, None)
 
-    termination = None
-    closeout = None
-    for txn in ordered:
-        kind = action_kind(txn, is_contract)
-        if kind in {"termination_convenience", "termination_cause"}:
-            termination = txn
-        elif kind == "closeout":
-            closeout = txn
+    # Closeout takes the code at face value, unlike reverify_awards, which
+    # requires corroborating text before calling an award closed out
+    # (see its _is_closeout). This column is the formal record either way,
+    # which is the same footing as Action Code Termination Modification.
+    closeout = next(
+        (t for t in reversed(ordered) if action_kind(t, is_contract) == "closeout"),
+        None,
+    )
+    index = terminating_index(
+        ordered, is_contract=is_contract, accept_text_evidence=False
+    )
+    termination = None if index is None else ordered[index]
     return TransactionHistoryFacts(ordered[0], ordered[-1], termination, closeout)
 
 
@@ -189,10 +235,12 @@ def history_columns(facts: TransactionHistoryFacts) -> dict:
             facts.latest, "action_type_description"
         ),
         "Latest Action Date": transaction_value(facts.latest, "action_date"),
-        "Termination Modification Number": transaction_value(
+        "Action Code Termination Modification": transaction_value(
             facts.termination, "modification_number"
         ),
-        "Termination Action Date": transaction_value(facts.termination, "action_date"),
+        "Action Code Termination Date": transaction_value(
+            facts.termination, "action_date"
+        ),
         "Closeout Modification Number": transaction_value(
             facts.closeout, "modification_number"
         ),

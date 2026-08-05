@@ -274,13 +274,13 @@ def test_one_full_history_supplies_snapshot_and_persisted_facts(workdir):
     assert record["Latest Action Type Description"] == "CONTINUATION"
     assert record["Latest Action Date"] == "2025-06-01"
     assert record["Latest Modification Number"] == "P00004"
-    assert record["Termination Modification Number"] == "P00002"
-    assert record["Termination Action Date"] == "2025-02-01"
+    assert record["Action Code Termination Modification"] == "P00002"
+    assert record["Action Code Termination Date"] == "2025-02-01"
     assert record["Closeout Modification Number"] == "P00003"
     assert record["Closeout Action Date"] == "2025-03-01"
     assert persisted["First Action Type"] == "A"
     assert persisted["Latest Modification Number"] == "P00004"
-    assert persisted["Termination Modification Number"] == "P00002"
+    assert persisted["Action Code Termination Modification"] == "P00002"
     assert persisted["Closeout Modification Number"] == "P00003"
 
 
@@ -295,8 +295,8 @@ def test_transaction_fields_are_blank_when_usaspending_returns_no_history():
         "Latest Action Type",
         "Latest Action Type Description",
         "Latest Action Date",
-        "Termination Modification Number",
-        "Termination Action Date",
+        "Action Code Termination Modification",
+        "Action Code Termination Date",
         "Closeout Modification Number",
         "Closeout Action Date",
     ):

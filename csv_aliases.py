@@ -40,6 +40,10 @@ SNAPSHOT = {
     # Usually the terminating transaction's text, not the award's blurb.
     "Description": "Award or Action Description",
     "Detection": "Detection Evidence",
+    # Qualified once a second termination answer was published beside it - see
+    # award_transaction_facts.terminating_index.
+    "Termination Modification Number": "Action Code Termination Modification",
+    "Termination Action Date": "Action Code Termination Date",
     # Every claim is DOGE's assertion, not an observation this tracker made.
     "Claiming Source": "Claimed By",
     "Claimed Status": "DOGE Claimed Status",
@@ -88,13 +92,23 @@ AUTO_VERDICTS = {
     "Auto Status": "Automated Verdict",
     "Verified Date": "Automated Verdict Date",
     "Transaction Baseline Amount": "Peak Cumulative Obligation",
+    # These two now reach the ledger, so they need names that say which of the
+    # two termination rules produced them.
+    "Termination Mod": "Verified Termination Modification",
+    "Termination Date": "Verified Termination Date",
 }
 
 # verification/initial_reported_end_dates.csv - write-once provenance.
 INITIAL_END_DATES: dict[str, str] = {}
 
 # verification/award_transaction_facts.csv - transaction-derived provenance.
-TRANSACTION_FACTS: dict[str, str] = {}
+# search.py rewrites this file wholesale every day, so these two entries only
+# have to survive one run of the current code; they are kept for the same
+# reason as AUTO_VERDICTS', so an older checkout cannot strand the file.
+TRANSACTION_FACTS = {
+    "Termination Modification Number": "Action Code Termination Modification",
+    "Termination Action Date": "Action Code Termination Date",
+}
 
 # verification/award_period_change_facts.csv - mirror period-change facts.
 PERIOD_CHANGE_FACTS: dict[str, str] = {}

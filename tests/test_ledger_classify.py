@@ -190,10 +190,14 @@ def test_ledger_and_reverify_read_the_same_text_the_same_way(text, expected):
 
 def test_both_modules_use_the_same_predicate_objects():
     """Guards against one module quietly reintroducing a local copy."""
+    import award_transaction_facts as atf
     import termination_vocabulary as tv
 
     assert rv.is_cause is tv.is_cause
-    assert rv.is_termination is tv.is_termination
+    # reverify no longer asks this itself: terminating_index owns both
+    # termination rules so the two published answers stay in one file.
+    assert atf.is_termination is tv.is_termination
+    assert atf.is_reversal is tv.is_reversal
     assert rv.is_descope is tv.is_descope
     assert rv.CLOSEOUT_TEXT is tv.CLOSEOUT_TEXT
     assert rv.is_vacatur is tv.is_vacatur

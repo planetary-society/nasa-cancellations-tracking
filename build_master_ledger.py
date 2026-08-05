@@ -141,10 +141,21 @@ AUTO_APPLICABLE_CLAIMED = {"closed_out"}
 # status - that is how a false positive still in the daily snapshot stays
 # visible. Mirrors LEDGER_OVERLAY_COLUMNS, which does the same job for the
 # transaction-facts sidecar.
+# The verdict's own termination anchor, as opposed to the action-code answer
+# the transaction sidecar stores. Both are published; see
+# award_transaction_facts.terminating_index for the two rules and why neither
+# subsumes the other. Declared here rather than in reverify_awards, which
+# writes them, because that module imports this one and not the reverse.
+VERIFIED_TERMINATION_COLUMNS = (
+    "Verified Termination Modification",
+    "Verified Termination Date",
+)
+
 AUTO_OVERLAY_COLUMNS = (
     "Automated Verdict",
     "Automated Verdict Date",
     "Peak Cumulative Obligation",
+    *VERIFIED_TERMINATION_COLUMNS,
 )
 
 FPDS_LAST_GOOD_DATE = "2026-02-24"  # last snapshot before ezsearch retirement
@@ -187,6 +198,10 @@ LEDGER_COLUMNS = [
     # read as a transaction date while carrying a database timestamp.
     "Latest Modification Number",
     *TRANSACTION_HISTORY_COLUMNS,
+    # Deliberately adjacent to the action-code answer it disagrees with, so
+    # the two are read together. Overlaid from auto_verification.csv and
+    # absent from the daily snapshot, hence not in the group above.
+    *VERIFIED_TERMINATION_COLUMNS,
     "Start Date",
     "Current End Date",
     "Initial Reported End Date",

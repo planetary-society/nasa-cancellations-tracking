@@ -51,7 +51,9 @@ from award_transaction_facts import (
     build_fact_row,
     fetch_transactions,
     load_facts,
+    terminating_index,
     transaction_sort_key,
+    transaction_value,
     uses_contract_action_codes,
     write_facts,
 )
@@ -68,7 +70,6 @@ from termination_vocabulary import (
     is_cause,
     is_descope,
     is_reversal,
-    is_termination,
     is_vacatur,
 )
 from utils import canonical_generated_award_id, read_rows
@@ -83,8 +84,9 @@ AUTO_COLUMNS = [
     "Automated Verdict Date",
     "Evidence",
     "Signals",
-    "Termination Mod",
-    "Termination Date",
+    # Overlaid onto the ledger beside the sidecar's action-code answer - see
+    # award_transaction_facts.terminating_index for why both are published.
+    *build_master_ledger.VERIFIED_TERMINATION_COLUMNS,
     "Latest Mod",
     "Latest Mod Date",
     "Post-Term Obligations",
@@ -110,10 +112,6 @@ RUN_LOG_COLUMNS = [
 # Above this share of failed lookups the run is treated as an outage: the
 # output file is left untouched rather than half-refreshed.
 MAX_UNRESOLVED_SHARE = 0.25
-
-
-def _is_reversal(txn):
-    return is_reversal(_text(txn))
 
 
 def _is_closeout(txn, kind):
@@ -154,7 +152,7 @@ def generated_id(ledger_row):
 
 
 def _text(txn):
-    return str(getattr(txn, "award_description", "") or "")
+    return transaction_value(txn, "award_description")
 
 
 def _obligation(txn):
@@ -196,9 +194,9 @@ def transaction_baseline_amount(txns):
 
 
 def _describe(txn):
-    mod = getattr(txn, "modification_number", "") or "?"
-    when = getattr(txn, "action_date", "") or "?"
-    code = getattr(txn, "action_type", "") or "?"
+    mod = transaction_value(txn, "modification_number") or "?"
+    when = transaction_value(txn, "action_date") or "?"
+    code = transaction_value(txn, "action_type") or "?"
     return f"{code} {mod} {when}"
 
 
@@ -219,9 +217,9 @@ def classify_transactions(txns, *, is_contract, ledger_row):
     kinds = [action_kind(t, is_contract) for t in txns]
 
     unknown = [
-        str(getattr(t, "action_type", "") or "")
+        transaction_value(t, "action_type")
         for t, k in zip(txns, kinds)
-        if k is None and str(getattr(t, "action_type", "") or "").strip()
+        if k is None and transaction_value(t, "action_type").strip()
     ]
 
     # Termination for cause is excluded by methodology, not a policy cancellation.
@@ -237,15 +235,9 @@ def classify_transactions(txns, *, is_contract, ledger_row):
 
     # Anchor on the LAST termination action, derived from the history itself
     # rather than from when we happened to observe it.
-    # A rescission names the thing it undoes ("Rescinding stop work notice"),
-    # so it reads as a termination too. Skip reversals here or they become their own
-    # anchor, leaving no post-termination window and hiding the reversal.
-    term_idx = None
-    for i, (txn, kind) in enumerate(zip(txns, kinds)):
-        if _is_reversal(txn):
-            continue
-        if kind == "termination_convenience" or is_termination(_text(txn)):
-            term_idx = i
+    term_idx = terminating_index(
+        txns, is_contract=is_contract, accept_text_evidence=True
+    )
     if term_idx is None:
         if unknown:
             return Verdict(
@@ -284,8 +276,11 @@ def classify_transactions(txns, *, is_contract, ledger_row):
     unknown_money = any(o is None for o in obligations)
     base = {
         "term": _describe(term_txn),
-        "term_mod": str(getattr(term_txn, "modification_number", "") or ""),
-        "term_date": str(getattr(term_txn, "action_date", "") or ""),
+        # Rendered by the same helper as the sidecar's Action Code Termination
+        # twin, so the two published answers cannot drift on how a missing
+        # field is written out.
+        "term_mod": transaction_value(term_txn, "modification_number"),
+        "term_date": transaction_value(term_txn, "action_date"),
         "post_n": len(post),
         "post_obl": f"{post_total:.2f}",
         "post_pos": len(positive),
@@ -304,7 +299,7 @@ def classify_transactions(txns, *, is_contract, ledger_row):
             )
 
     for txn in post:
-        if _is_reversal(txn):
+        if is_reversal(_text(txn)):
             return Verdict(
                 "reinstated",
                 "high",
@@ -462,10 +457,10 @@ def build_row(aid, rec, verdict, txns, previous, human, *, today, ok):
     )
     if txns:
         latest = max(txns, key=transaction_sort_key)
-        row["Latest Mod"] = str(getattr(latest, "modification_number", "") or "")
-        row["Latest Mod Date"] = str(getattr(latest, "action_date", "") or "")
-    row["Termination Mod"] = verdict.signals.get("term_mod", "")
-    row["Termination Date"] = verdict.signals.get("term_date", "")
+        row["Latest Mod"] = transaction_value(latest, "modification_number")
+        row["Latest Mod Date"] = transaction_value(latest, "action_date")
+    row["Verified Termination Modification"] = verdict.signals.get("term_mod", "")
+    row["Verified Termination Date"] = verdict.signals.get("term_date", "")
     row["Post-Term Obligations"] = verdict.signals.get("post_obl", "")
 
     human_status = human.get(aid)

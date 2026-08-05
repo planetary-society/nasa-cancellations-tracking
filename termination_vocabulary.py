@@ -5,11 +5,18 @@ or a termination for cause".
 
 Two modules answer that question about the same awards: build_master_ledger's
 classify(), inferring a status from the description history in the daily
-snapshots, and reverify_awards, judging USAspending transaction descriptions
-weekly. They used to answer it differently - classify() with bare substring
-tests, reverify with guarded regexes - so the same text could yield different
-statuses depending on which module saw it. These patterns are the guarded
-versions, and both modules now share them.
+snapshots, and award_transaction_facts.terminating_index, judging USAspending
+transaction descriptions. They used to answer it differently - classify() with
+bare substring tests, reverify with guarded regexes - so the same text could
+yield different statuses depending on which module saw it. These patterns are
+the guarded versions, and both modules now share them.
+
+This file owns the *text* predicates only. Deciding which transaction in a
+history a predicate applies to is a different question, and it lives in
+award_transaction_facts.terminating_index - which composes these patterns with
+FPDS/FABS action codes, so it cannot move down here. Adding a new rule of that
+shape belongs there, not in this file. reverify_awards no longer asks
+is_termination directly for the same reason.
 
 Two guards are load-bearing and easy to lose in a rewrite:
 

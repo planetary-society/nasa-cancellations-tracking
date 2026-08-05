@@ -55,8 +55,8 @@ def test_full_build_carries_transaction_history_facts(workdir, write_csv):
                     "Latest Action Type": "B",
                     "Latest Action Type Description": "CONTINUATION",
                     "Latest Action Date": "2025-06-01",
-                    "Termination Modification Number": "P00002",
-                    "Termination Action Date": "2025-02-01",
+                    "Action Code Termination Modification": "P00002",
+                    "Action Code Termination Date": "2025-02-01",
                     "Closeout Modification Number": "P00003",
                     "Closeout Action Date": "2025-03-01",
                 },
@@ -73,8 +73,8 @@ def test_full_build_carries_transaction_history_facts(workdir, write_csv):
     assert record["Latest Action Type"] == "B"
     assert record["Latest Action Type Description"] == "CONTINUATION"
     assert record["Latest Action Date"] == "2025-06-01"
-    assert record["Termination Modification Number"] == "P00002"
-    assert record["Termination Action Date"] == "2025-02-01"
+    assert record["Action Code Termination Modification"] == "P00002"
+    assert record["Action Code Termination Date"] == "2025-02-01"
     assert record["Closeout Modification Number"] == "P00003"
     assert record["Closeout Action Date"] == "2025-03-01"
 
@@ -102,8 +102,8 @@ def test_blank_later_snapshot_does_not_erase_formal_modifications(workdir, write
         "A-1",
         source="USAspending Terminations",
         **{
-            "Termination Modification Number": "P00002",
-            "Termination Action Date": "2025-02-01",
+            "Action Code Termination Modification": "P00002",
+            "Action Code Termination Date": "2025-02-01",
             "Closeout Modification Number": "P00003",
             "Closeout Action Date": "2025-03-01",
         },
@@ -122,8 +122,8 @@ def test_blank_later_snapshot_does_not_erase_formal_modifications(workdir, write
     bml.build()
 
     record = ledger()["A-1"]
-    assert record["Termination Modification Number"] == "P00002"
-    assert record["Termination Action Date"] == "2025-02-01"
+    assert record["Action Code Termination Modification"] == "P00002"
+    assert record["Action Code Termination Date"] == "2025-02-01"
     assert record["Closeout Modification Number"] == "P00003"
     assert record["Closeout Action Date"] == "2025-03-01"
 
@@ -170,7 +170,7 @@ def test_transaction_fact_sidecar_round_trips_and_validates_dates(workdir):
 
     assert stored["A-1"]["Transaction Count"] == "4"
     assert stored["A-1"]["Latest Modification Number"] == "P00004"
-    assert stored["A-1"]["Termination Action Date"] == "2025-02-01"
+    assert stored["A-1"]["Action Code Termination Date"] == "2025-02-01"
     assert stored["A-1"]["Closeout Action Date"] == "2025-03-01"
 
     stored["A-1"]["Latest Action Date"] = "not-a-date"
@@ -235,7 +235,7 @@ def test_sidecar_overlays_accepted_ledger_without_accepting_quarantine(
     assert records["A-1"]["Latest Modification Number"] == "P00004"
     assert records["A-1"]["First Action Type"] == "A"
     assert records["A-1"]["Latest Action Date"] == "2025-06-01"
-    assert records["A-1"]["Termination Modification Number"] == "P00002"
+    assert records["A-1"]["Action Code Termination Modification"] == "P00002"
     assert records["A-1"]["Closeout Modification Number"] == "P00003"
 
 

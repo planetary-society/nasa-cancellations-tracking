@@ -152,7 +152,7 @@ def test_weekly_reverification_reuses_fetched_history_for_persisted_facts():
     assert changed
     assert rows["A-1"]["Transaction Count"] == "2"
     assert rows["A-1"]["Latest Modification Number"] == "P00001"
-    assert rows["A-1"]["Termination Modification Number"] == "P00001"
+    assert rows["A-1"]["Action Code Termination Modification"] == "P00001"
 
 
 # --- transaction-derived amount baseline ----------------------------------
