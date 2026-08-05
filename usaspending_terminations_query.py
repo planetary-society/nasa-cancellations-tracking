@@ -44,6 +44,7 @@ from itertools import islice
 import pandas as pd
 from usaspending import Award, Transaction, TransactionsSearch, USASpendingClient
 
+import sources
 from contract_query import FINAL_COLUMNS, ContractQuery
 from detection_methods import (
     OBLIGATION_CLAWBACK,
@@ -662,7 +663,10 @@ class USASpendingTerminationsQuery(ContractQuery):
             )
 
         df = pd.DataFrame(records, columns=self.final_columns)
-        print(f"USAspendingTerminations: {len(df)} unique awards", file=sys.stderr)
+        print(
+            f"{sources.USASPENDING_TERMINATIONS}: {len(df)} unique awards",
+            file=sys.stderr,
+        )
         self.export_to_csv(df, "usaspending_terminations_query")
         return df
 

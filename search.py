@@ -12,6 +12,7 @@ from usaspending.exceptions import USASpendingError
 import award_period_change_facts
 import award_transaction_facts as transaction_facts
 import build_master_ledger
+import sources
 from contract_query import csv_files_equal, find_most_recent_csv, validate_source_frame
 from doge_search import DOGEQuery
 from initial_end_dates import (
@@ -49,15 +50,15 @@ logger = logging.getLogger(__name__)
 # USAspendingTerminations replaces it with transaction-level keyword
 # search against the USAspending API (same underlying FPDS data).
 SOURCES = {
-    "DOGE": DOGEQuery,
-    "NPDV": NPDVQuery,
-    "NASAGrants": NASAGrantsQuery,
-    "USAspendingTerminations": USASpendingTerminationsQuery,
+    sources.DOGE: DOGEQuery,
+    sources.NPDV: NPDVQuery,
+    sources.NASA_GRANTS: NASAGrantsQuery,
+    sources.USASPENDING_TERMINATIONS: USASpendingTerminationsQuery,
     # Last on purpose: dict order is first-source-wins for an award's snapshot
     # row, and the mirror is a local Postgres depth net that lags the live API
     # by 2-6 weeks (and replays its last export when the DB is unreachable),
     # so it should only own rows no other source found.
-    "LocalUSASpendingMirror": LocalUSASpendingMirrorQuery,
+    sources.LOCAL_MIRROR: LocalUSASpendingMirrorQuery,
 }
 
 # Sources that publish an external *claim* of a cancellation, as opposed to
@@ -65,7 +66,7 @@ SOURCES = {
 # tracked, so it is recorded even when the award turns out to have merely
 # expired or grown - and it is attached to the consolidated row regardless of
 # which source won that row (see _build_claim_index).
-CLAIM_SOURCES = {"DOGE"}
+CLAIM_SOURCES = sources.CLAIM_SOURCES
 
 # Ledger statuses that mean "left the snapshot and nobody has said why yet".
 # Everything else is either currently flagged, adjudicated, or excluded on
@@ -377,7 +378,7 @@ class Search:
             try:
                 df = query_class().search()
             except LocalMirrorUnavailableError as e:
-                if source != "LocalUSASpendingMirror":
+                if source != sources.LOCAL_MIRROR:
                     raise RuntimeError(
                         f"Source '{source}' incorrectly reported a local-mirror "
                         f"availability error: {e}"
@@ -416,7 +417,7 @@ class Search:
         prior successful facts intact; an unconfirmed new label is retried on a
         later run rather than guessed into the snapshot.
         """
-        source = "NASAGrants"
+        source = sources.NASA_GRANTS
         frame = self.sources_cancellation_data.get(source)
         if frame is None or frame.empty:
             return
@@ -723,7 +724,7 @@ class Search:
         # dialling when the run has already established the mirror is
         # unavailable; the except is the narrow guard for a host that dies
         # between the source query and here.
-        if fetchable and "LocalUSASpendingMirror" not in self.skipped_sources:
+        if fetchable and sources.LOCAL_MIRROR not in self.skipped_sources:
             try:
                 new_results.extend(
                     LocalUSASpendingMirrorQuery().fetch_initial_reported_end_dates(

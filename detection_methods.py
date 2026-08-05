@@ -1,5 +1,7 @@
 """Structured names for the signal that caused an award to enter the tracker."""
 
+import sources
+
 EXTERNAL_CLAIM = "external_claim"
 DESCRIPTION_KEYWORD = "description_keyword"
 POP_END_DATE_CHANGE = "pop_end_date_change"
@@ -44,6 +46,18 @@ _METHOD_PRIORITY = (
     POP_END_DATE_CHANGE,
 )
 
+# What a snapshot's source alone implies, for rows archived before the
+# structured method was recorded. The two sources that ran several nets get an
+# explicitly legacy answer rather than an invented one.
+_SOURCE_FALLBACKS = {
+    sources.DOGE: EXTERNAL_CLAIM,
+    sources.NPDV: DESCRIPTION_KEYWORD,
+    sources.NASA_GRANTS: POP_END_DATE_CHANGE,
+    sources.FPDS: LEGACY_FPDS_KEYWORD,
+    sources.LOCAL_MIRROR: LEGACY_LOCAL_MIRROR_SIGNAL,
+    sources.USASPENDING_TERMINATIONS: LEGACY_USASPENDING_SIGNAL,
+}
+
 
 def primary_local_method(rows) -> str:
     """Return the primary public method for a group of Local Mirror net rows."""
@@ -79,23 +93,11 @@ def infer_snapshot_method(row: dict) -> str:
     if "end date shortened" in detection or "end date truncated" in detection:
         return POP_END_DATE_CHANGE
 
-    source = str(row.get("Source") or "").strip()
+    source = str(row.get(sources.SOURCE_COLUMN) or "").strip()
     if not source:
-        # Ledger rows accumulate Sources while snapshots carry one Source.
-        # This is only a last-resort fallback: normal rebuilds infer from each
-        # snapshot before the sources are collapsed into ledger history.
-        sources = str(row.get("Sources") or "").split("; ")
-        source = next((item.strip() for item in reversed(sources) if item.strip()), "")
-    if source == "DOGE":
-        return EXTERNAL_CLAIM
-    if source == "NPDV":
-        return DESCRIPTION_KEYWORD
-    if source == "NASAGrants":
-        return POP_END_DATE_CHANGE
-    if source == "FPDS":
-        return LEGACY_FPDS_KEYWORD
-    if source == "LocalUSASpendingMirror":
-        return LEGACY_LOCAL_MIRROR_SIGNAL
-    if source == "USAspendingTerminations":
-        return LEGACY_USASPENDING_SIGNAL
-    return LEGACY_SOURCE_SIGNAL
+        # Ledger rows accumulate Sources while snapshots carry one Source, so
+        # which key is present is what tells the two apart. This is only a
+        # last-resort fallback: normal rebuilds infer from each snapshot before
+        # the sources are collapsed into ledger history.
+        source = next(reversed(sources.sources_of(row)), "")
+    return _SOURCE_FALLBACKS.get(source, LEGACY_SOURCE_SIGNAL)

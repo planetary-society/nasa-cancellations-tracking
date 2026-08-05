@@ -42,6 +42,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 import award_period_change_facts
+import sources
 from award_period import SHORTENING_MIN_DAYS
 from contract_query import FINAL_COLUMNS, ContractQuery
 from detection_methods import primary_local_method
@@ -715,7 +716,7 @@ class LocalUSASpendingMirrorQuery(ContractQuery):
                 f"  {net.name}: {total} awards ({exclusive} found by this net alone)",
                 file=sys.stderr,
             )
-        print(f"LocalUSASpendingMirror: {len(df)} unique awards", file=sys.stderr)
+        print(f"{sources.LOCAL_MIRROR}: {len(df)} unique awards", file=sys.stderr)
         return df
 
     def fetch_initial_reported_end_dates(
