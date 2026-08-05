@@ -48,7 +48,7 @@ def load_reviewed_removals(path=REVIEWED_REMOVALS_PATH):
     return {
         row["Award ID"]
         for row in read_rows(path)
-        if row.get("Award ID") and row.get("Status") == "excluded_by_design"
+        if row.get("Award ID") and row.get("Tracking Status") == "excluded_by_design"
     }
 
 
@@ -79,8 +79,8 @@ def log_disappearances(new_rows, old_rows, run_date):
                     run_date,
                     aid,
                     r.get("Source", ""),
-                    r.get("Recipient", ""),
-                    (r.get("Description", "") or "")[:300],
+                    r.get("Recipient Name", ""),
+                    (r.get("Award or Action Description", "") or "")[:300],
                     "pending",
                 ]
             )

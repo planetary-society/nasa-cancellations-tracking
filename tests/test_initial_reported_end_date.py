@@ -427,11 +427,11 @@ def test_search_backfills_ledger_and_current_awards_atomically(
 ):
     write_csv(
         bml.LEDGER_PATH,
-        ["Award ID", "URL"],
+        ["Award ID", "USAspending URL"],
         [
             {
                 "Award ID": "OLD-1",
-                "URL": "https://www.usaspending.gov/award/ASST_NON_OLD-1_080/",
+                "USAspending URL": "https://www.usaspending.gov/award/ASST_NON_OLD-1_080/",
             }
         ],
     )
@@ -523,7 +523,7 @@ def test_enrichment_only_change_rebuilds_unchanged_snapshot_ledger(
         {
             "Source": "DOGE",
             "Award ID": "NEW-1",
-            "Recipient": "Recipient",
+            "Recipient Name": "Recipient Name",
             "Latest Action Date": "2026-01-01",
             "Initial Reported End Date": "2024-12-31",
         }
@@ -633,10 +633,10 @@ def test_winning_source_cannot_suppress_initial_end_date():
                 },
             )(),
             "recipient": type(
-                "Recipient",
+                "Recipient Name",
                 (),
                 {
-                    "name": "Recipient",
+                    "name": "Recipient Name",
                     "business_types": [],
                     "location": type("Location", (), {"district": "CA-01"})(),
                 },
@@ -659,11 +659,11 @@ def test_winning_source_cannot_suppress_initial_end_date():
 SNAPSHOT_COLUMNS = [
     "Source",
     "Award ID",
-    "Recipient",
-    "End Date",
+    "Recipient Name",
+    "Current End Date",
     "Initial Reported End Date",
-    "Description",
-    "URL",
+    "Award or Action Description",
+    "USAspending URL",
 ]
 
 
@@ -671,11 +671,11 @@ def snapshot_row(aid, end="2026-12-31", initial=""):
     return {
         "Source": "NPDV",
         "Award ID": aid,
-        "Recipient": f"R {aid}",
-        "End Date": end,
+        "Recipient Name": f"R {aid}",
+        "Current End Date": end,
         "Initial Reported End Date": initial,
-        "Description": "termination",
-        "URL": f"https://www.usaspending.gov/award/CONT_AWD_{aid}/",
+        "Award or Action Description": "termination",
+        "USAspending URL": f"https://www.usaspending.gov/award/CONT_AWD_{aid}/",
     }
 
 
@@ -719,7 +719,7 @@ def test_full_build_backfills_sidecar_and_prefers_it_for_trend(workdir, write_cs
 
     row = read_ledger()["A-1"]
     assert row["Initial Reported End Date"] == "2028-12-31"
-    assert row["First End Date"] == "2026-12-31"
+    assert row["End Date When First Flagged"] == "2026-12-31"
     assert row["End Date Trend"] == "truncated"
 
 
@@ -748,13 +748,13 @@ def test_incremental_build_does_not_overwrite_recorded_initial_date(workdir, wri
 
 def test_legacy_first_end_date_remains_the_fallback():
     rec = {
-        "First Award Amount": "",
-        "Transaction Baseline Amount": "",
-        "Award Amount": "",
+        "Obligated Amount When First Flagged": "",
+        "Peak Cumulative Obligation": "",
+        "Current Obligated Amount": "",
         "Initial Reported End Date": "",
-        "First End Date": "2024-01-01",
-        "End Date": "2025-01-01",
-        "Claiming Source": "",
+        "End Date When First Flagged": "2024-01-01",
+        "Current End Date": "2025-01-01",
+        "Claimed By": "",
     }
 
     bml.derive_trends(rec)

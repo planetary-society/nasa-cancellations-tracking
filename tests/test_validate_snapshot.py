@@ -7,17 +7,23 @@ import pytest
 
 import validate_snapshot as vs
 
-COLS = ["Source", "District", "Recipient", "Award ID", "Description"]
+COLS = [
+    "Source",
+    "Recipient Congressional District",
+    "Recipient Name",
+    "Award ID",
+    "Award or Action Description",
+]
 
 
 def rows(n, source="DOGE", start=0):
     return [
         {
             "Source": source,
-            "District": "",
-            "Recipient": f"R{i}",
+            "Recipient Congressional District": "",
+            "Recipient Name": f"R{i}",
             "Award ID": f"A-{i}",
-            "Description": f"terminated {i}",
+            "Award or Action Description": f"terminated {i}",
         }
         for i in range(start, start + n)
     ]
@@ -143,13 +149,13 @@ def test_only_excluded_by_design_is_loaded_as_a_reviewed_removal(workdir):
     os.makedirs(os.path.dirname(vs.REVIEWED_REMOVALS_PATH), exist_ok=True)
     with open(vs.REVIEWED_REMOVALS_PATH, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
-            fh, fieldnames=["Award ID", "Status", "Verified Date", "Evidence"]
+            fh, fieldnames=["Award ID", "Tracking Status", "Verified Date", "Evidence"]
         )
         writer.writeheader()
         writer.writerows(
             [
-                {"Award ID": "A-1", "Status": "excluded_by_design"},
-                {"Award ID": "A-2", "Status": "continued"},
+                {"Award ID": "A-1", "Tracking Status": "excluded_by_design"},
+                {"Award ID": "A-2", "Tracking Status": "continued"},
             ]
         )
 

@@ -13,9 +13,9 @@ import reverify_awards as rv
 from tests.helpers import FakeTxn
 
 REC = {
-    "First Seen": "2025-04-05",
-    "Last Seen": "2026-07-29",
-    "Sources": "NPDV",
+    "First Flagged Date": "2025-04-05",
+    "Last Flagged Date": "2026-07-29",
+    "Flagged By": "NPDV",
 }
 
 
@@ -114,9 +114,9 @@ def test_classify_no_longer_special_cases_the_grants_experiment():
     status, _ = classify(
         ["ordinary description"],
         **{
-            "First Seen": "2026-01-08",
-            "Last Seen": "2026-01-08",
-            "Sources": "NASAGrants",
+            "First Flagged Date": "2026-01-08",
+            "Last Flagged Date": "2026-01-08",
+            "Flagged By": "NASAGrants",
         },
     )
     assert status == "dropped_pending_review"
@@ -125,7 +125,7 @@ def test_classify_no_longer_special_cases_the_grants_experiment():
 def test_fpds_retirement():
     status, detail = classify(
         ["ordinary description"],
-        **{"Last Seen": bml.FPDS_LAST_GOOD_DATE, "Sources": "NPDV; FPDS"},
+        **{"Last Flagged Date": bml.FPDS_LAST_GOOD_DATE, "Flagged By": "NPDV; FPDS"},
     )
     assert status == "source_retired"
     assert "fpds" in detail.lower()
@@ -134,7 +134,7 @@ def test_fpds_retirement():
 def test_fpds_source_but_a_later_last_seen_is_not_source_retired():
     status, _ = classify(
         ["ordinary description"],
-        **{"Last Seen": "2026-06-16", "Sources": "NPDV; FPDS"},
+        **{"Last Flagged Date": "2026-06-16", "Flagged By": "NPDV; FPDS"},
     )
     assert status == "dropped_pending_review"
 
@@ -177,7 +177,7 @@ def test_ledger_and_reverify_read_the_same_text_the_same_way(text, expected):
             FakeTxn("2025-06-01", "P00002", "A", text, 0.0),
         ],
         is_contract=True,
-        ledger_row={"End Date": "2030-01-01"},
+        ledger_row={"Current End Date": "2030-01-01"},
     )
 
     if expected is None:

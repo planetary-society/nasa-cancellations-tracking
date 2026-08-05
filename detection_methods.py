@@ -81,7 +81,7 @@ def infer_snapshot_method(row: dict) -> str:
     if existing:
         return existing
 
-    detection = str(row.get("Detection") or "").casefold()
+    detection = str(row.get("Detection Evidence") or "").casefold()
     if "terminate-for-convenience action" in detection or (
         "legal-contract-cancellation action" in detection
     ):

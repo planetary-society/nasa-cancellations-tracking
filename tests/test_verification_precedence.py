@@ -30,9 +30,9 @@ def auto_row(aid, status, confidence="high", **extra):
     r.update(
         {
             "Award ID": aid,
-            "Auto Status": status,
+            "Automated Verdict": status,
             "Confidence": confidence,
-            "Verified Date": "2026-07-30",
+            "Automated Verdict Date": "2026-07-30",
             "Evidence": f"machine call for {aid}",
         }
     )
@@ -76,11 +76,11 @@ def test_human_verdict_beats_a_contradicting_high_confidence_auto(workdir):
     )
     write_csv(
         bml.VERIFICATION_PATH,
-        ["Award ID", "Status", "Verified Date", "Evidence"],
+        ["Award ID", "Tracking Status", "Verified Date", "Evidence"],
         [
             {
                 "Award ID": "A-1",
-                "Status": "still_terminated",
+                "Tracking Status": "still_terminated",
                 "Verified Date": "2026-07-29",
                 "Evidence": "hand-checked",
             }
@@ -147,7 +147,7 @@ def test_a_claimed_award_is_never_pruned_by_automation(workdir):
         reverify_awards.AUTO_COLUMNS,
         [auto_row("A-6", "continued")],
     )
-    ledger = {"A-6": {"Claiming Source": "DOGE"}}
+    ledger = {"A-6": {"Claimed By": "DOGE"}}
     assert bml.load_verification(ledger) == {}
     # ...while the same verdict applies to an award nobody claimed.
     assert bml.load_verification({"A-6": {}})["A-6"][0] == "continued"
@@ -201,5 +201,5 @@ def test_a_claimed_award_may_still_be_refined_within_the_retain_set(workdir):
         reverify_awards.AUTO_COLUMNS,
         [auto_row("A-7", "closed_out")],
     )
-    ledger = {"A-7": {"Claiming Source": "DOGE"}}
+    ledger = {"A-7": {"Claimed By": "DOGE"}}
     assert bml.load_verification(ledger)["A-7"][0] == "closed_out"

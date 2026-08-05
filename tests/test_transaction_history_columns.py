@@ -19,8 +19,8 @@ def row(aid, source="NPDV", **extra):
         {
             "Source": source,
             "Award ID": aid,
-            "Recipient": f"Recipient {aid}",
-            "Description": "terminate for convenience",
+            "Recipient Name": f"Recipient {aid}",
+            "Award or Action Description": "terminate for convenience",
         }
     )
     record.update(extra)
@@ -246,8 +246,8 @@ def test_search_backfills_a_ledger_only_award_once(workdir, write_csv):
         [
             {
                 "Award ID": "A-1",
-                "Recipient": "Historical recipient",
-                "URL": "https://www.usaspending.gov/award/CONT_AWD_A-1/",
+                "Recipient Name": "Historical recipient",
+                "USAspending URL": "https://www.usaspending.gov/award/CONT_AWD_A-1/",
             }
         ],
     )

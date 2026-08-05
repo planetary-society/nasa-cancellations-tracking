@@ -17,22 +17,22 @@ import build_master_ledger as bml
 # a failure rather than be followed silently.
 COLS = [
     "Source",
-    "District",
-    "Recipient",
+    "Recipient Congressional District",
+    "Recipient Name",
     "Award ID",
     "Latest Modification Number",
     "Start Date",
-    "End Date",
-    "Award Amount",
+    "Current End Date",
+    "Current Obligated Amount",
     "Total Outlays",
-    "Description",
-    "Detection",
-    "Business Categories",
-    "URL",
-    "Claiming Source",
-    "Claimed Status",
-    "Claimed Savings",
-    "Claim Date",
+    "Award or Action Description",
+    "Detection Evidence",
+    "Recipient Business Categories",
+    "USAspending URL",
+    "Claimed By",
+    "DOGE Claimed Status",
+    "DOGE Claimed Savings",
+    "DOGE Claim Date",
 ]
 
 # What each source actually emits, from the 2026-07-30 source query CSVs.
@@ -47,9 +47,9 @@ def row(aid, source, detection="", **extra):
         {
             "Source": source,
             "Award ID": aid,
-            "Recipient": f"R {aid}",
-            "Description": "terminate for convenience",
-            "Detection": detection,
+            "Recipient Name": f"R {aid}",
+            "Award or Action Description": "terminate for convenience",
+            "Detection Evidence": detection,
         }
     )
     r.update(extra)
@@ -78,9 +78,9 @@ def keep():
 
 
 def test_detection_is_a_refreshed_ledger_column():
-    assert "Detection" in bml.LEDGER_COLUMNS
-    assert "Detection" in bml.REFRESHED_COLUMNS
-    assert "Detection" not in bml.STICKY_COLUMNS
+    assert "Detection Evidence" in bml.LEDGER_COLUMNS
+    assert "Detection Evidence" in bml.REFRESHED_COLUMNS
+    assert "Detection Evidence" not in bml.STICKY_COLUMNS
 
 
 # --- full rebuild ----------------------------------------------------------
@@ -98,9 +98,9 @@ def test_full_rebuild_carries_detection_from_the_snapshot(workdir):
     bml.build()
 
     led = ledger()
-    assert led["A-1"]["Detection"] == CONVENIENCE
-    assert led["G-1"]["Detection"] == f"{TRUNCATION}; {CLAWBACK}"
-    assert led["KEEP-1"]["Detection"] == ""
+    assert led["A-1"]["Detection Evidence"] == CONVENIENCE
+    assert led["G-1"]["Detection Evidence"] == f"{TRUNCATION}; {CLAWBACK}"
+    assert led["KEEP-1"]["Detection Evidence"] == ""
 
 
 def test_newest_observation_wins(workdir):
@@ -115,7 +115,7 @@ def test_newest_observation_wins(workdir):
     )
     bml.build()
 
-    assert ledger()["A-1"]["Detection"] == CONVENIENCE
+    assert ledger()["A-1"]["Detection Evidence"] == CONVENIENCE
 
 
 def test_a_blank_day_does_not_erase_a_recorded_detection(workdir):
@@ -128,7 +128,7 @@ def test_a_blank_day_does_not_erase_a_recorded_detection(workdir):
     write_snap("consolidated/nasa_x_2026-07-30.csv", [keep(), row("A-1", "NPDV")])
     bml.build()
 
-    assert ledger()["A-1"]["Detection"] == CONVENIENCE
+    assert ledger()["A-1"]["Detection Evidence"] == CONVENIENCE
 
 
 # --- archived snapshots predating the column -------------------------------
@@ -136,7 +136,7 @@ def test_a_blank_day_does_not_erase_a_recorded_detection(workdir):
 
 def test_snapshots_without_the_column_build_an_empty_detection(workdir):
     """Every snapshot before 2026-07-30 lacks it; the build must not crash."""
-    legacy = [c for c in COLS if c != "Detection"]
+    legacy = [c for c in COLS if c != "Detection Evidence"]
     write_snap(
         "consolidated/nasa_x_2026-07-29.csv",
         [keep(), row("A-1", "USAspendingTerminations", CONVENIENCE)],
@@ -145,8 +145,8 @@ def test_snapshots_without_the_column_build_an_empty_detection(workdir):
     bml.build()
 
     led = ledger()
-    assert led["A-1"]["Detection"] == ""
-    assert led["A-1"]["Status"] == "listed"
+    assert led["A-1"]["Detection Evidence"] == ""
+    assert led["A-1"]["Tracking Status"] == "listed"
 
 
 def test_a_column_less_snapshot_cannot_clobber_a_populated_detection(workdir):
@@ -159,11 +159,11 @@ def test_a_column_less_snapshot_cannot_clobber_a_populated_detection(workdir):
     write_snap(
         "consolidated/nasa_x_2026-07-30.csv",
         [keep(), row("A-1", "USAspendingTerminations")],
-        fieldnames=[c for c in COLS if c != "Detection"],
+        fieldnames=[c for c in COLS if c != "Detection Evidence"],
     )
     bml.build()
 
-    assert ledger()["A-1"]["Detection"] == CONVENIENCE
+    assert ledger()["A-1"]["Detection Evidence"] == CONVENIENCE
 
 
 def test_the_new_column_is_the_only_thing_that_changed(workdir):
@@ -175,9 +175,17 @@ def test_the_new_column_is_the_only_thing_that_changed(workdir):
     rows = [
         keep(),
         row(
-            "A-1", "USAspendingTerminations", CONVENIENCE, **{"End Date": "2026-05-06"}
+            "A-1",
+            "USAspendingTerminations",
+            CONVENIENCE,
+            **{"Current End Date": "2026-05-06"},
         ),
-        row("G-1", "LocalUSASpendingMirror", CLAWBACK, **{"Award Amount": "448257"}),
+        row(
+            "G-1",
+            "LocalUSASpendingMirror",
+            CLAWBACK,
+            **{"Current Obligated Amount": "448257"},
+        ),
     ]
     write_snap("consolidated/nasa_x_2026-07-30.csv", rows)
     bml.build()
@@ -186,7 +194,7 @@ def test_the_new_column_is_the_only_thing_that_changed(workdir):
     write_snap(
         "consolidated/nasa_x_2026-07-30.csv",
         rows,
-        fieldnames=[c for c in COLS if c != "Detection"],
+        fieldnames=[c for c in COLS if c != "Detection Evidence"],
     )
     bml.build()
     without_detection = ledger()
@@ -194,12 +202,12 @@ def test_the_new_column_is_the_only_thing_that_changed(workdir):
     assert set(with_detection) == set(without_detection)
     for aid, rec in with_detection.items():
         other = without_detection[aid]
-        detection_fields = {"Detection", "Primary Detection Method"}
+        detection_fields = {"Detection Evidence", "Primary Detection Method"}
         assert {k: v for k, v in rec.items() if k not in detection_fields} == {
             k: v for k, v in other.items() if k not in detection_fields
         }
-    assert with_detection["A-1"]["Detection"] == CONVENIENCE
-    assert without_detection["A-1"]["Detection"] == ""
+    assert with_detection["A-1"]["Detection Evidence"] == CONVENIENCE
+    assert without_detection["A-1"]["Detection Evidence"] == ""
 
 
 # --- incremental path ------------------------------------------------------
@@ -215,7 +223,7 @@ def test_update_path_carries_detection(workdir):
     )
     bml.build(update_only=True)
 
-    assert ledger()["A-1"]["Detection"] == CONVENIENCE
+    assert ledger()["A-1"]["Detection Evidence"] == CONVENIENCE
 
 
 def test_update_path_refreshes_a_detection_already_in_the_ledger(workdir):
@@ -231,7 +239,7 @@ def test_update_path_refreshes_a_detection_already_in_the_ledger(workdir):
     )
     bml.build(update_only=True)
 
-    assert ledger()["A-1"]["Detection"] == CONVENIENCE
+    assert ledger()["A-1"]["Detection Evidence"] == CONVENIENCE
 
 
 def test_both_build_paths_agree_on_detection(workdir):
@@ -249,8 +257,8 @@ def test_both_build_paths_agree_on_detection(workdir):
     bml.build(update_only=True)
     after_update = ledger()
 
-    assert {aid: r["Detection"] for aid, r in after_full.items()} == {
-        aid: r["Detection"] for aid, r in after_update.items()
+    assert {aid: r["Detection Evidence"] for aid, r in after_full.items()} == {
+        aid: r["Detection Evidence"] for aid, r in after_update.items()
     }
 
 
@@ -262,7 +270,7 @@ def test_a_pre_detection_ledger_read_back_on_update_gains_the_column(workdir):
 
     with open(bml.LEDGER_PATH, encoding="utf-8") as fh:
         stored = list(csv.DictReader(fh))
-    legacy_columns = [c for c in bml.LEDGER_COLUMNS if c != "Detection"]
+    legacy_columns = [c for c in bml.LEDGER_COLUMNS if c != "Detection Evidence"]
     with open(bml.LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=legacy_columns, extrasaction="ignore")
         w.writeheader()
@@ -275,5 +283,5 @@ def test_a_pre_detection_ledger_read_back_on_update_gains_the_column(workdir):
     bml.build(update_only=True)
 
     led = ledger()
-    assert led["KEEP-1"]["Detection"] == ""
-    assert led["A-1"]["Detection"] == CONVENIENCE
+    assert led["KEEP-1"]["Detection Evidence"] == ""
+    assert led["A-1"]["Detection Evidence"] == CONVENIENCE

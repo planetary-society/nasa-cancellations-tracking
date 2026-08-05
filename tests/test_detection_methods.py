@@ -78,7 +78,7 @@ def test_detection_text_recovers_a_precise_method_before_legacy_fallback():
         dm.infer_snapshot_method(
             {
                 "Source": "LocalUSASpendingMirror",
-                "Detection": "End date shortened 365 days from 2027-01-01 to "
+                "Detection Evidence": "End date shortened 365 days from 2027-01-01 to "
                 "2026-01-01 by mod P00002 on 2026-01-01",
             }
         )
@@ -88,7 +88,7 @@ def test_detection_text_recovers_a_precise_method_before_legacy_fallback():
         dm.infer_snapshot_method(
             {
                 "Source": "USAspendingTerminations",
-                "Detection": "Terminate-for-convenience action P00002 on 2026-01-01",
+                "Detection Evidence": "Terminate-for-convenience action P00002 on 2026-01-01",
             }
         )
         == dm.TERMINATION_ACTION_CODE
@@ -96,7 +96,13 @@ def test_detection_text_recovers_a_precise_method_before_legacy_fallback():
 
 
 def test_master_ledger_rebuild_populates_every_historical_row(workdir, write_csv):
-    columns = ["Source", "Award ID", "Recipient", "Description", "Detection"]
+    columns = [
+        "Source",
+        "Award ID",
+        "Recipient Name",
+        "Award or Action Description",
+        "Detection Evidence",
+    ]
     write_csv(
         "consolidated/nasa_contract_cancellations_2026-01-01.csv",
         columns,
@@ -104,12 +110,12 @@ def test_master_ledger_rebuild_populates_every_historical_row(workdir, write_csv
             {
                 "Source": "NPDV",
                 "Award ID": "N-1",
-                "Recipient": "NPDV recipient",
+                "Recipient Name": "NPDV recipient",
             },
             {
                 "Source": "LocalUSASpendingMirror",
                 "Award ID": "L-1",
-                "Recipient": "Mirror recipient",
+                "Recipient Name": "Mirror recipient",
             },
         ],
     )

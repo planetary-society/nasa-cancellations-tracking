@@ -76,26 +76,26 @@ UNEXPLAINED_STATUSES = {"dropped_pending_review", "needs_manual_review"}
 # Claim fields: what an external source asserted, kept separate from what the
 # award data shows actually happened.
 CLAIM_COLUMNS = (
-    "Claiming Source",
-    "Claimed Status",
-    "Claimed Savings",
-    "Claim Date",
+    "Claimed By",
+    "DOGE Claimed Status",
+    "DOGE Claimed Savings",
+    "DOGE Claim Date",
 )
 
 # Column order of the consolidated snapshot CSV.
 SNAPSHOT_COLUMNS = [
     "Source",
-    "District",
-    "Recipient",
+    "Recipient Congressional District",
+    "Recipient Name",
     "Award ID",
     "Latest Modification Number",
     *build_master_ledger.TRANSACTION_HISTORY_COLUMNS,
     "Start Date",
-    "End Date",
+    "Current End Date",
     "Initial Reported End Date",
-    "Award Amount",
+    "Current Obligated Amount",
     "Total Outlays",
-    "Description",
+    "Award or Action Description",
     # Structured counterpart to Detection: the primary signal that caused the
     # winning source to include this award.
     "Primary Detection Method",
@@ -104,9 +104,9 @@ SNAPSHOT_COLUMNS = [
     # 2026-05-06"); until this column existed it was dropped here, so the
     # published data could say an award was cancelled but never on what
     # evidence. Distinct from Claimed Status, which is an outside assertion.
-    "Detection",
-    "Business Categories",
-    "URL",
+    "Detection Evidence",
+    "Recipient Business Categories",
+    "USAspending URL",
     *CLAIM_COLUMNS,
 ]
 
@@ -290,7 +290,7 @@ class Search:
         output_data = list(self.unique_cancellations.values())
 
         df = pd.DataFrame(output_data, columns=SNAPSHOT_COLUMNS)
-        df.sort_values(by=["Recipient", "Latest Action Date"], inplace=True)
+        df.sort_values(by=["Recipient Name", "Latest Action Date"], inplace=True)
 
         # Make output directory if it doesn't exist
         os.makedirs("consolidated", exist_ok=True)
@@ -515,7 +515,12 @@ class Search:
                     aid = (row.get("Award ID") or "").strip()
                     if aid:
                         cache.append(
-                            (aid, _generated_id_from_url(row.get("URL") or ""))
+                            (
+                                aid,
+                                _generated_id_from_url(
+                                    row.get("USAspending URL") or ""
+                                ),
+                            )
                         )
             self._ledger_award_ids = cache
         return cache
@@ -917,13 +922,15 @@ class Search:
             return
         rows = read_rows(build_master_ledger.LEDGER_PATH)
 
-        pending = [r for r in rows if r["Status"] in UNEXPLAINED_STATUSES]
+        pending = [r for r in rows if r["Tracking Status"] in UNEXPLAINED_STATUSES]
         if pending:
             print(f"\nLedger awards awaiting review ({len(pending)}):")
-            for r in sorted(pending, key=lambda r: (r["Status"], r["Award ID"])):
+            for r in sorted(
+                pending, key=lambda r: (r["Tracking Status"], r["Award ID"])
+            ):
                 print(
-                    f"   {r['Award ID']:18s} {r['Status']:24s} "
-                    f"last seen {r['Last Seen']}"
+                    f"   {r['Award ID']:18s} {r['Tracking Status']:24s} "
+                    f"last seen {r['Last Flagged Date']}"
                 )
         else:
             print("\nNo ledger awards awaiting review.")
@@ -931,9 +938,9 @@ class Search:
         disagree = [
             r
             for r in rows
-            if r.get("Auto Status")
-            and r.get("Auto Status") != r["Status"]
-            and r["Status"] not in ("listed", "excluded_by_design")
+            if r.get("Automated Verdict")
+            and r.get("Automated Verdict") != r["Tracking Status"]
+            and r["Tracking Status"] not in ("listed", "excluded_by_design")
         ]
         if disagree:
             print(
@@ -943,8 +950,8 @@ class Search:
             )
             for r in sorted(disagree, key=lambda r: r["Award ID"]):
                 print(
-                    f"   {r['Award ID']:18s} ledger={r['Status']:22s} "
-                    f"auto={r['Auto Status']}"
+                    f"   {r['Award ID']:18s} ledger={r['Tracking Status']:22s} "
+                    f"auto={r['Automated Verdict']}"
                 )
 
     def _build_claim_index(self):
@@ -965,10 +972,10 @@ class Search:
                 if not award_id or award_id in self.claims:
                     continue
                 self.claims[award_id] = {
-                    "Claiming Source": source,
-                    "Claimed Status": _cell(row, "status"),
-                    "Claimed Savings": _cell(row, "savings"),
-                    "Claim Date": _cell(row, "claim_date"),
+                    "Claimed By": source,
+                    "DOGE Claimed Status": _cell(row, "status"),
+                    "DOGE Claimed Savings": _cell(row, "savings"),
+                    "DOGE Claim Date": _cell(row, "claim_date"),
                 }
 
     def _add_source_awards(self, source_name: str, source_award_ids: list[str]):
@@ -1044,14 +1051,14 @@ class Search:
                 # column.
                 self.unique_cancellations[award_id] = {
                     "Source": source_name,
-                    "District": award.recipient.location.district,
-                    "Recipient": award.recipient.name,
+                    "Recipient Congressional District": award.recipient.location.district,
+                    "Recipient Name": award.recipient.name,
                     "Award ID": award_id,
                     # Same producer as the sidecar row, so the two cannot
                     # disagree about a transaction-derived column.
                     **transaction_facts.history_columns(history_facts),
                     "Start Date": award.period_of_performance.start_date,
-                    "End Date": _award_end_date(award),
+                    "Current End Date": _award_end_date(award),
                     # Derived independently of which source won this snapshot
                     # row, so a DOGE/NPDV row can retain USAspending history.
                     "Initial Reported End Date": getattr(
@@ -1059,13 +1066,19 @@ class Search:
                     )
                     .get(award_id, {})
                     .get("Initial Reported End Date", ""),
-                    "Award Amount": award.award_amount,
+                    "Current Obligated Amount": award.award_amount,
                     "Total Outlays": award.total_outlay,
-                    "Description": (original_description or award.description),
+                    "Award or Action Description": (
+                        original_description or award.description
+                    ),
                     "Primary Detection Method": _cell(source_row, "detection_method"),
-                    "Detection": detection,
-                    "Business Categories": ", ".join(award.recipient.business_types),
-                    "URL": canonical_usaspending_url(award.usa_spending_url),
+                    "Detection Evidence": detection,
+                    "Recipient Business Categories": ", ".join(
+                        award.recipient.business_types
+                    ),
+                    "USAspending URL": canonical_usaspending_url(
+                        award.usa_spending_url
+                    ),
                     **{
                         col: self.claims.get(award_id, {}).get(col, "")
                         for col in CLAIM_COLUMNS

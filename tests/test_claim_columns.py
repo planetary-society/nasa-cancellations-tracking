@@ -7,21 +7,21 @@ import reverify_awards
 
 COLS = [
     "Source",
-    "District",
-    "Recipient",
+    "Recipient Congressional District",
+    "Recipient Name",
     "Award ID",
     "Latest Modification Number",
     "Start Date",
-    "End Date",
-    "Award Amount",
+    "Current End Date",
+    "Current Obligated Amount",
     "Total Outlays",
-    "Description",
-    "Business Categories",
-    "URL",
-    "Claiming Source",
-    "Claimed Status",
-    "Claimed Savings",
-    "Claim Date",
+    "Award or Action Description",
+    "Recipient Business Categories",
+    "USAspending URL",
+    "Claimed By",
+    "DOGE Claimed Status",
+    "DOGE Claimed Savings",
+    "DOGE Claim Date",
 ]
 
 DOGE_DESC = (
@@ -40,9 +40,9 @@ def row(aid, source, desc="", **extra):
         {
             "Source": source,
             "Award ID": aid,
-            "Recipient": f"R {aid}",
-            "Description": desc,
-            "URL": f"https://www.usaspending.gov/award/CONT_AWD_{aid}/",
+            "Recipient Name": f"R {aid}",
+            "Award or Action Description": desc,
+            "USAspending URL": f"https://www.usaspending.gov/award/CONT_AWD_{aid}/",
         }
     )
     r.update(extra)
@@ -66,17 +66,17 @@ def ledger():
 
 def test_parses_contract_claim_prose():
     c = bml.parse_claim_from_description(DOGE_DESC)
-    assert c["Claiming Source"] == "DOGE"
-    assert c["Claimed Status"] == "TERMINATED"
-    assert c["Claimed Savings"] == "1423496.00"
-    assert c["Claim Date"] == "4/14/2025"
+    assert c["Claimed By"] == "DOGE"
+    assert c["DOGE Claimed Status"] == "TERMINATED"
+    assert c["DOGE Claimed Savings"] == "1423496.00"
+    assert c["DOGE Claim Date"] == "4/14/2025"
 
 
 def test_parses_grant_claim_prose_without_status():
     c = bml.parse_claim_from_description(GRANT_DESC)
-    assert c["Claiming Source"] == "DOGE"
-    assert c["Claimed Status"] == ""
-    assert c["Claimed Savings"] == "96700.00"
+    assert c["Claimed By"] == "DOGE"
+    assert c["DOGE Claimed Status"] == ""
+    assert c["DOGE Claimed Savings"] == "96700.00"
 
 
 def test_non_doge_description_is_not_a_claim():
@@ -118,10 +118,10 @@ def test_claim_survives_a_day_when_another_source_wins_the_row(workdir):
     bml.build()
 
     x = ledger()["X-1"]
-    assert x["Claiming Source"] == "DOGE"
-    assert x["Claimed Status"] == "TERMINATED"
-    assert x["Claimed Savings"] == "1423496.00"
-    assert x["Sources"] == "DOGE; NPDV"
+    assert x["Claimed By"] == "DOGE"
+    assert x["DOGE Claimed Status"] == "TERMINATED"
+    assert x["DOGE Claimed Savings"] == "1423496.00"
+    assert x["Flagged By"] == "DOGE; NPDV"
 
 
 def test_claim_captured_from_real_columns_not_only_prose(workdir):
@@ -135,18 +135,18 @@ def test_claim_captured_from_real_columns_not_only_prose(workdir):
                 "DOGE",
                 "no prose here",
                 **{
-                    "Claiming Source": "DOGE",
-                    "Claimed Status": "Expired",
-                    "Claimed Savings": "50000",
-                    "Claim Date": "2025-03-20",
+                    "Claimed By": "DOGE",
+                    "DOGE Claimed Status": "Expired",
+                    "DOGE Claimed Savings": "50000",
+                    "DOGE Claim Date": "2025-03-20",
                 },
             ),
         ],
     )
     bml.build()
     x = ledger()["X-1"]
-    assert x["Claimed Status"] == "Expired"
-    assert x["Claimed Savings"] == "50000.00"  # normalized on the column path too
+    assert x["DOGE Claimed Status"] == "Expired"
+    assert x["DOGE Claimed Savings"] == "50000.00"  # normalized on the column path too
 
 
 def test_build_canonicalizes_a_legacy_nasa_assistance_url(workdir):
@@ -155,13 +155,19 @@ def test_build_canonicalizes_a_legacy_nasa_assistance_url(workdir):
         "80NSSC22M0122",
         "NASAGrants",
         "Administrative - Decrease",
-        URL=("https://www.usaspending.gov/award/ASST_NON_80NSSC22M0122_8000/"),
+        **{
+            "USAspending URL": (
+                "https://www.usaspending.gov/award/ASST_NON_80NSSC22M0122_8000/"
+            )
+        },
     )
     write_snap("consolidated/nasa_x_2026-01-01.csv", [keep, legacy])
 
     bml.build()
 
-    assert ledger()["80NSSC22M0122"]["URL"].endswith("/ASST_NON_80NSSC22M0122_080/")
+    assert ledger()["80NSSC22M0122"]["USAspending URL"].endswith(
+        "/ASST_NON_80NSSC22M0122_080/"
+    )
 
 
 def test_build_uses_auto_transaction_baseline_for_a_zero_snapshot_amount(workdir):
@@ -170,7 +176,7 @@ def test_build_uses_auto_transaction_baseline_for_a_zero_snapshot_amount(workdir
         "A-0",
         "DOGE",
         DOGE_DESC,
-        **{"Award Amount": "0.00"},
+        **{"Current Obligated Amount": "0.00"},
     )
     write_snap("consolidated/nasa_x_2026-01-01.csv", [keep, claimed])
 
@@ -178,7 +184,7 @@ def test_build_uses_auto_transaction_baseline_for_a_zero_snapshot_amount(workdir
     auto.update(
         {
             "Award ID": "A-0",
-            "Transaction Baseline Amount": "44325.00",
+            "Peak Cumulative Obligation": "44325.00",
         }
     )
     with open(bml.AUTO_VERIFICATION_PATH, "w", newline="", encoding="utf-8") as fh:
@@ -189,10 +195,10 @@ def test_build_uses_auto_transaction_baseline_for_a_zero_snapshot_amount(workdir
     bml.build()
 
     result = ledger()["A-0"]
-    assert result["First Award Amount"] == "0.00"
-    assert result["Transaction Baseline Amount"] == "44325.00"
+    assert result["Obligated Amount When First Flagged"] == "0.00"
+    assert result["Peak Cumulative Obligation"] == "44325.00"
     assert result["Amount Trend"] == "shrank"
-    assert result["Claim Divergence"] == "claimed_and_shrank"
+    assert result["DOGE Claim vs Outcome"] == "claimed_and_shrank"
 
 
 def test_restatement_is_logged_not_overwritten(workdir):
@@ -204,9 +210,9 @@ def test_restatement_is_logged_not_overwritten(workdir):
     bml.build()
 
     x = ledger()["X-1"]
-    assert x["Claimed Status"] == "TERMINATED", "original claim must be preserved"
-    assert "Claimed Status=Expired" in x["Claim Revisions"]
-    assert "2026-01-02" in x["Claim Revisions"]
+    assert x["DOGE Claimed Status"] == "TERMINATED", "original claim must be preserved"
+    assert "DOGE Claimed Status=Expired" in x["DOGE Claim Revisions"]
+    assert "2026-01-02" in x["DOGE Claim Revisions"]
 
 
 def test_incremental_build_does_not_re_log_an_old_revision(workdir):
@@ -222,15 +228,15 @@ def test_incremental_build_does_not_re_log_an_old_revision(workdir):
     write_snap("consolidated/nasa_x_2026-01-01.csv", [keep, row("X-1", "DOGE", first)])
     write_snap("consolidated/nasa_x_2026-01-02.csv", [keep, row("X-1", "DOGE", second)])
     bml.build()
-    after_full = ledger()["X-1"]["Claim Revisions"]
+    after_full = ledger()["X-1"]["DOGE Claim Revisions"]
 
     # A later day repeating the revised claim must add nothing.
     write_snap("consolidated/nasa_x_2026-01-03.csv", [keep, row("X-1", "DOGE", second)])
     bml.build(update_only=True)
-    assert ledger()["X-1"]["Claim Revisions"] == after_full
+    assert ledger()["X-1"]["DOGE Claim Revisions"] == after_full
 
     bml.build()
-    assert ledger()["X-1"]["Claim Revisions"] == after_full
+    assert ledger()["X-1"]["DOGE Claim Revisions"] == after_full
 
 
 def test_incremental_build_cannot_infer_history_based_statuses(workdir):
@@ -250,20 +256,20 @@ def test_incremental_build_cannot_infer_history_based_statuses(workdir):
 
     # While R-1 is still in the snapshot it is simply `listed`.
     bml.build()
-    assert ledger()["R-1"]["Status"] == "listed"
+    assert ledger()["R-1"]["Tracking Status"] == "listed"
 
     # It drops out. The rescission text now lives only in older snapshots,
     # which the incremental path never reads.
     write_snap("consolidated/nasa_x_2026-01-03.csv", [keep])
     bml.build(update_only=True)
-    assert ledger()["R-1"]["Status"] == "dropped_pending_review", (
+    assert ledger()["R-1"]["Tracking Status"] == "dropped_pending_review", (
         "if --update can now infer this, the full-rebuild rationale in "
         "search.py should be revisited"
     )
 
     # A full rebuild sees the whole history and gets it right.
     bml.build()
-    assert ledger()["R-1"]["Status"] == "reinstated"
+    assert ledger()["R-1"]["Tracking Status"] == "reinstated"
 
 
 def test_reverted_grants_experiment_never_enters_the_ledger(workdir):
@@ -294,8 +300,8 @@ def test_only_that_source_on_that_date_is_dropped(workdir):
     led = ledger()
     # Seen on other dates, so it survives - and its First Seen predates the
     # experiment rather than being set by the ignored row.
-    assert led["REAL-1"]["First Seen"] == "2026-01-07"
-    assert led["REAL-1"]["Last Seen"] == "2026-01-09"
+    assert led["REAL-1"]["First Flagged Date"] == "2026-01-07"
+    assert led["REAL-1"]["Last Flagged Date"] == "2026-01-09"
     # A different source on the same date is untouched.
     assert "OTHER-1" in led
 
@@ -309,10 +315,13 @@ def test_same_source_on_a_different_date_is_untouched(workdir):
 
 
 def test_parse_claim_revisions_reads_back_what_record_claim_wrote():
-    text = "2026-01-02 Claimed Status=Expired; 2026-03-04 Claimed Savings=50000.00"
+    text = (
+        "2026-01-02 DOGE Claimed Status=Expired; "
+        "2026-03-04 DOGE Claimed Savings=50000.00"
+    )
     assert bml.parse_claim_revisions(text) == {
-        "Claimed Status": "Expired",
-        "Claimed Savings": "50000.00",
+        "DOGE Claimed Status": "Expired",
+        "DOGE Claimed Savings": "50000.00",
     }
     assert bml.parse_claim_revisions("") == {}
 
@@ -324,4 +333,4 @@ def test_unchanged_claim_logs_no_revision(workdir):
             f"consolidated/nasa_x_{day}.csv", [keep, row("X-1", "DOGE", DOGE_DESC)]
         )
     bml.build()
-    assert ledger()["X-1"]["Claim Revisions"] == ""
+    assert ledger()["X-1"]["DOGE Claim Revisions"] == ""

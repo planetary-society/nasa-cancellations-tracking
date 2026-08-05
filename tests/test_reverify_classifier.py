@@ -17,8 +17,9 @@ import reverify_awards
 from award_transaction_facts import PAGE_SIZE, transaction_history_facts
 from reverify_awards import classify_transactions, generated_id
 from tests.helpers import FakeTxn
+from utils import read_rows
 
-LEDGER_ROW = {"End Date": "2030-01-01"}
+LEDGER_ROW = {"Current End Date": "2030-01-01"}
 
 
 def classify(txns, is_contract=True, ledger_row=None):
@@ -44,7 +45,9 @@ def test_empty_history_is_unresolved_never_a_verdict():
 def test_generated_id_canonicalizes_a_legacy_nasa_assistance_url():
     assert (
         generated_id(
-            {"URL": "https://www.usaspending.gov/award/ASST_NON_80NSSC22M0122_8000/"}
+            {
+                "USAspending URL": "https://www.usaspending.gov/award/ASST_NON_80NSSC22M0122_8000/"
+            }
         )
         == "ASST_NON_80NSSC22M0122_080"
     )
@@ -219,9 +222,9 @@ def _select_one(first_amount, *, status="listed", baseline=None):
     aid = "80NSSC25FA315"
     ledger = {
         aid: {
-            "First Award Amount": first_amount,
-            "Status": status,
-            "Claiming Source": "",
+            "Obligated Amount When First Flagged": first_amount,
+            "Tracking Status": status,
+            "Claimed By": "",
         }
     }
     previous = (
@@ -229,7 +232,7 @@ def _select_one(first_amount, *, status="listed", baseline=None):
         if baseline is None
         else {
             aid: {
-                "Transaction Baseline Amount": baseline,
+                "Peak Cumulative Obligation": baseline,
                 "Last Success Date": date.today().isoformat(),
             }
         }
@@ -270,7 +273,7 @@ def test_attempted_baseline_is_not_selected_again_while_fresh(baseline):
 def test_successful_reverification_stores_the_transaction_baseline():
     aid = "80NSSC24PC475"
     rec = {
-        "URL": (
+        "USAspending URL": (
             "https://www.usaspending.gov/award/"
             "CONT_AWD_80NSSC24PC475_8000_80NSSC24AA005_8000/"
         )
@@ -293,7 +296,7 @@ def test_successful_reverification_stores_the_transaction_baseline():
         ok=True,
     )
 
-    assert row["Transaction Baseline Amount"] == "44325.00"
+    assert row["Peak Cumulative Obligation"] == "44325.00"
 
 
 def test_successful_incomplete_history_stores_an_unknown_baseline_sentinel():
@@ -303,7 +306,7 @@ def test_successful_incomplete_history_stores_an_unknown_baseline_sentinel():
     )
     row = reverify_awards.build_row(
         aid,
-        {"URL": f"https://www.usaspending.gov/award/CONT_AWD_{aid}/"},
+        {"USAspending URL": f"https://www.usaspending.gov/award/CONT_AWD_{aid}/"},
         verdict,
         [FakeTxn("2025-01-01", federal_action_obligation=None)],
         {},
@@ -312,7 +315,7 @@ def test_successful_incomplete_history_stores_an_unknown_baseline_sentinel():
         ok=True,
     )
 
-    assert row["Transaction Baseline Amount"] == "unknown"
+    assert row["Peak Cumulative Obligation"] == "unknown"
 
 
 # --- termination for cause -------------------------------------------------
@@ -521,7 +524,7 @@ def test_still_terminated_is_low_confidence():
 def test_no_termination_and_past_end_date_is_naturally_expired():
     v = classify(
         [FakeTxn("2025-01-01", "P00000", "A", "base award", 100.0)],
-        ledger_row={"End Date": "2025-06-30", "Sources": "DOGE"},
+        ledger_row={"Current End Date": "2025-06-30", "Flagged By": "DOGE"},
     )
     assert v.status == "naturally_expired"
     assert v.confidence == "low"
@@ -752,8 +755,10 @@ FIXTURES = {
 
 
 def _human_verdicts():
-    with open(HUMAN_PATH, encoding="utf-8") as fh:
-        return {r["Award ID"]: r["Status"] for r in csv.DictReader(fh)}
+    # Through the loader, not a raw reader: this is the real committed file,
+    # so its stored header is whatever the last migration left, and the alias
+    # table is what makes that irrelevant here.
+    return {r["Award ID"]: r["Tracking Status"] for r in read_rows(HUMAN_PATH)}
 
 
 def test_fixtures_name_only_real_curated_awards():

@@ -94,6 +94,24 @@ def make_search(source_rows, awards, ignore=()):
     return obj
 
 
+def test_a_built_row_fills_every_snapshot_column():
+    """The snapshot writer cannot report a column-name mismatch.
+
+    search.py writes with `pd.DataFrame(rows, columns=SNAPSHOT_COLUMNS)`, so a
+    name that is renamed in the constant but not in the row builder produces a
+    column of empty strings rather than an error - it would take a person
+    noticing a blank column in published data.
+    """
+    obj = make_search({"NPDV": [row("A-1")]}, [FakeAward("A-1")])
+
+    built = set(obj.unique_cancellations["A-1"])
+
+    assert built == set(s.SNAPSHOT_COLUMNS), (
+        f"only in the row builder: {sorted(built - set(s.SNAPSHOT_COLUMNS))}; "
+        f"only in SNAPSHOT_COLUMNS: {sorted(set(s.SNAPSHOT_COLUMNS) - built)}"
+    )
+
+
 def row(aid, desc="terminated", status="", action_date="2025-06-01", basis="evidence"):
     """One source row. Defaults are in-window so window enforcement is opt-in.
 
@@ -133,7 +151,7 @@ def test_idv_last_date_to_order_fills_a_missing_period_end():
         [award],
     )
 
-    assert obj.unique_cancellations["80KSC020D0016"]["End Date"] == "2025-09-24"
+    assert obj.unique_cancellations["80KSC020D0016"]["Current End Date"] == "2025-09-24"
 
 
 def test_idv_snake_case_last_date_to_order_is_also_supported():
@@ -141,7 +159,7 @@ def test_idv_snake_case_last_date_to_order_is_also_supported():
     award.raw = {"last_date_to_order": "2025-09-24"}
     obj = make_search({"USAspendingTerminations": [row("IDV-1")]}, [award])
 
-    assert obj.unique_cancellations["IDV-1"]["End Date"] == "2025-09-24"
+    assert obj.unique_cancellations["IDV-1"]["Current End Date"] == "2025-09-24"
 
 
 def test_idv_period_end_remains_authoritative_when_present():
@@ -153,7 +171,7 @@ def test_idv_period_end_remains_authoritative_when_present():
     )
     obj = make_search({"USAspendingTerminations": [row("IDV-1")]}, [award])
 
-    assert obj.unique_cancellations["IDV-1"]["End Date"] == "2026-12-31"
+    assert obj.unique_cancellations["IDV-1"]["Current End Date"] == "2026-12-31"
 
 
 def test_non_idv_never_uses_last_date_to_order():
@@ -165,7 +183,7 @@ def test_non_idv_never_uses_last_date_to_order():
     )
     obj = make_search({"USAspendingTerminations": [row("CONTRACT-1")]}, [award])
 
-    assert obj.unique_cancellations["CONTRACT-1"]["End Date"] == ""
+    assert obj.unique_cancellations["CONTRACT-1"]["Current End Date"] == ""
 
 
 def test_search_publishes_the_canonical_nasa_assistance_url():
@@ -176,7 +194,7 @@ def test_search_publishes_the_canonical_nasa_assistance_url():
 
     obj = make_search({"NASAGrants": [row("80NSSC22M0122")]}, [award])
 
-    assert obj.unique_cancellations["80NSSC22M0122"]["URL"].endswith(
+    assert obj.unique_cancellations["80NSSC22M0122"]["USAspending URL"].endswith(
         "/ASST_NON_80NSSC22M0122_080/"
     )
 
@@ -187,7 +205,7 @@ def test_source_description_normalizes_carriage_returns():
         [FakeAward("A-1")],
     )
 
-    assert obj.unique_cancellations["A-1"]["Description"] == (
+    assert obj.unique_cancellations["A-1"]["Award or Action Description"] == (
         "first line\n  second line  "
     )
 
@@ -197,7 +215,7 @@ def test_source_description_normalizes_carriage_returns():
 
 def test_detection_is_a_snapshot_column():
     """It has to be here or the source's evidence never leaves the query."""
-    assert "Detection" in s.SNAPSHOT_COLUMNS
+    assert "Detection Evidence" in s.SNAPSHOT_COLUMNS
 
 
 def test_one_full_history_supplies_snapshot_and_persisted_facts(workdir):
@@ -308,21 +326,21 @@ def test_snapshot_carries_each_source_detection_string():
     )
 
     for name, text in detections.items():
-        assert obj.unique_cancellations[f"{name}-1"]["Detection"] == text
+        assert obj.unique_cancellations[f"{name}-1"]["Detection Evidence"] == text
 
 
 def test_source_without_detection_evidence_leaves_the_cell_empty():
     """NPDV infers nothing it can name: it matches on description text only."""
     obj = make_search({"NPDV": [row("A-1")]}, [FakeAward("A-1")])
 
-    assert obj.unique_cancellations["A-1"]["Detection"] == ""
+    assert obj.unique_cancellations["A-1"]["Detection Evidence"] == ""
 
 
 def test_an_all_blank_status_column_does_not_become_the_string_nan():
     """pandas hands back NaN for a column of Nones, and str(NaN) is 'nan'."""
     obj = make_search({"NPDV": [row("A-1", status=None)]}, [FakeAward("A-1")])
 
-    assert obj.unique_cancellations["A-1"]["Detection"] == ""
+    assert obj.unique_cancellations["A-1"]["Detection Evidence"] == ""
 
 
 def test_unresolvable_award_is_recorded_with_its_source():
@@ -525,9 +543,9 @@ def test_report_lists_unexplained_ledger_statuses(capsys, ledger):
         r.update(
             {
                 "Award ID": aid,
-                "Status": status,
-                "Last Seen": "2026-07-30",
-                "Auto Status": auto,
+                "Tracking Status": status,
+                "Last Flagged Date": "2026-07-30",
+                "Automated Verdict": auto,
             }
         )
         return r
@@ -554,9 +572,9 @@ def test_report_surfaces_machine_disagreement(capsys, ledger):
         r.update(
             {
                 "Award ID": aid,
-                "Status": status,
-                "Last Seen": "2026-07-30",
-                "Auto Status": auto,
+                "Tracking Status": status,
+                "Last Flagged Date": "2026-07-30",
+                "Automated Verdict": auto,
             }
         )
         return r

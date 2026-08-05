@@ -35,7 +35,7 @@ REQUIRED_SOURCES = frozenset({NPDV})
 # The ledger column that accumulates every source that ever flagged an award.
 # One snapshot row is owned by one source and carries the singular "Source";
 # this is the plural union, joined by _SEPARATOR.
-SOURCES_COLUMN = "Sources"
+SOURCES_COLUMN = "Flagged By"
 _SEPARATOR = "; "
 
 
@@ -48,7 +48,7 @@ def sources_of(rec) -> list[str]:
 def has_source(rec, name: str) -> bool:
     """Whether `name` flagged this award.
 
-    Not a substring test. `"FPDS" in rec["Sources"]` was true for any label
+    Not a substring test. `"FPDS" in rec["Flagged By"]` was true for any label
     containing those four letters, which is the kind of thing that stays
     correct until a source is renamed.
     """

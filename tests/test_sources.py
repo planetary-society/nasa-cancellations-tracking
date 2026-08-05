@@ -10,31 +10,31 @@ import sources
 
 
 def test_sources_of_splits_the_joined_cell():
-    assert sources.sources_of({"Sources": "NPDV; DOGE"}) == ["NPDV", "DOGE"]
+    assert sources.sources_of({"Flagged By": "NPDV; DOGE"}) == ["NPDV", "DOGE"]
 
 
 def test_sources_of_handles_absent_empty_and_single():
     assert sources.sources_of({}) == []
-    assert sources.sources_of({"Sources": ""}) == []
-    assert sources.sources_of({"Sources": None}) == []
-    assert sources.sources_of({"Sources": "DOGE"}) == ["DOGE"]
+    assert sources.sources_of({"Flagged By": ""}) == []
+    assert sources.sources_of({"Flagged By": None}) == []
+    assert sources.sources_of({"Flagged By": "DOGE"}) == ["DOGE"]
 
 
 def test_has_source_does_not_match_a_label_that_merely_contains_another():
-    """classify() used `"FPDS" in rec["Sources"]`, a substring test.
+    """classify() used `"FPDS" in rec["Flagged By"]`, a substring test.
 
     Nothing is misclassified by it today, because no current label contains
     another's name - but that is a property of the six labels, not of the
     check, and the point of naming them in one place is to be able to change
     them.
     """
-    rec = {"Sources": f"Legacy{sources.FPDS}Mirror"}
+    rec = {"Flagged By": f"Legacy{sources.FPDS}Mirror"}
 
     assert not sources.has_source(rec, sources.FPDS)
 
 
 def test_has_source_matches_whole_labels():
-    rec = {"Sources": "NPDV; FPDS; USAspendingTerminations"}
+    rec = {"Flagged By": "NPDV; FPDS; USAspendingTerminations"}
 
     assert sources.has_source(rec, sources.FPDS)
     assert sources.has_source(rec, sources.USASPENDING_TERMINATIONS)
@@ -42,30 +42,30 @@ def test_has_source_matches_whole_labels():
 
 
 def test_add_source_appends_and_stays_idempotent():
-    rec = {"Sources": "NPDV"}
+    rec = {"Flagged By": "NPDV"}
 
     sources.add_source(rec, sources.DOGE)
-    assert rec["Sources"] == "NPDV; DOGE"
+    assert rec["Flagged By"] == "NPDV; DOGE"
 
     sources.add_source(rec, sources.DOGE)
-    assert rec["Sources"] == "NPDV; DOGE"
+    assert rec["Flagged By"] == "NPDV; DOGE"
 
 
 def test_add_source_seeds_an_empty_cell_without_a_leading_separator():
-    rec = {"Sources": ""}
+    rec = {"Flagged By": ""}
 
     sources.add_source(rec, sources.NPDV)
 
-    assert rec["Sources"] == "NPDV"
+    assert rec["Flagged By"] == "NPDV"
 
 
 def test_add_source_ignores_a_blank_name():
     """A snapshot row with no Source must not append an empty segment."""
-    rec = {"Sources": "NPDV"}
+    rec = {"Flagged By": "NPDV"}
 
     sources.add_source(rec, "")
 
-    assert rec["Sources"] == "NPDV"
+    assert rec["Flagged By"] == "NPDV"
 
 
 def test_a_snapshot_without_a_required_source_is_degraded():

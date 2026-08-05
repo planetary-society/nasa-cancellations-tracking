@@ -162,7 +162,7 @@ def test_80nssc25k7577_remains_a_qualifying_detection():
             ),
         ],
         is_contract=False,
-        ledger_row={"End Date": "2026-02-25"},
+        ledger_row={"Current End Date": "2026-02-25"},
     )
     assert verdict.status == "naturally_expired"
 

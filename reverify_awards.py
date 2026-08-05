@@ -77,9 +77,9 @@ RUN_LOG_PATH = os.path.join("verification", "reverify_runs.csv")
 AUTO_COLUMNS = [
     "Award ID",
     "Generated Award ID",
-    "Auto Status",
+    "Automated Verdict",
     "Confidence",
-    "Verified Date",
+    "Automated Verdict Date",
     "Evidence",
     "Signals",
     "Termination Mod",
@@ -87,7 +87,7 @@ AUTO_COLUMNS = [
     "Latest Mod",
     "Latest Mod Date",
     "Post-Term Obligations",
-    "Transaction Baseline Amount",
+    "Peak Cumulative Obligation",
     "Transaction Count",
     "Disagrees With Human",
     "Last Attempt Date",
@@ -148,7 +148,7 @@ def render_signals(signals):
 
 def generated_id(ledger_row):
     """Pull the USAspending generated award id out of the ledger URL column."""
-    m = re.search(r"/award/([^/]+)/?", ledger_row.get("URL") or "")
+    m = re.search(r"/award/([^/]+)/?", ledger_row.get("USAspending URL") or "")
     return canonical_generated_award_id(m.group(1)) if m else ""
 
 
@@ -254,7 +254,7 @@ def classify_transactions(txns, *, is_contract, ledger_row):
                 f"termination signal; vocabulary may have drifted.",
                 {"unknown": ",".join(sorted(set(unknown))), "n": len(txns)},
             )
-        end_date = str(ledger_row.get("End Date") or "")
+        end_date = str(ledger_row.get("Current End Date") or "")
         if end_date and end_date < date.today().isoformat():
             return Verdict(
                 "naturally_expired",
@@ -367,7 +367,7 @@ def classify_transactions(txns, *, is_contract, ledger_row):
 def load_human_verdicts():
     if not os.path.exists(VERIFICATION_PATH):
         return {}
-    return {r["Award ID"]: r["Status"] for r in read_rows(VERIFICATION_PATH)}
+    return {r["Award ID"]: r["Tracking Status"] for r in read_rows(VERIFICATION_PATH)}
 
 
 def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):
@@ -391,15 +391,15 @@ def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):
 
     selected, tiers = [], Counter()
     for aid, rec in ledger.items():
-        status = rec.get("Status", "")
+        status = rec.get("Tracking Status", "")
         prev = previous.get(aid, {})
         # A blank baseline means not yet attempted. A successful lookup whose
         # history cannot yield a numeric baseline stores the explicit `unknown`
         # sentinel, avoiding a permanent retry loop while still allowing
         # bounded migration runs to pick up untouched rows on the next pass.
         needs_baseline = not build_master_ledger._amount(
-            rec.get("First Award Amount")
-        ) and not prev.get("Transaction Baseline Amount")
+            rec.get("Obligated Amount When First Flagged")
+        ) and not prev.get("Peak Cumulative Obligation")
 
         if (
             status == "excluded_by_design"
@@ -411,13 +411,13 @@ def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):
 
         if needs_baseline:
             tier, window = "0_baseline_backfill", 0
-        elif prev.get("Auto Status") == "unresolved" or prev.get("Last Error"):
+        elif prev.get("Automated Verdict") == "unresolved" or prev.get("Last Error"):
             tier, window = "0_retry", 0
         elif status in ("dropped_pending_review", "source_retired"):
             tier, window = "1_unverified", 0
         elif status in ("still_terminated", "closed_out", "descoped"):
             tier, window = "2_verified_dropped", stale_days
-        elif status == "listed" and not rec.get("Claiming Source"):
+        elif status == "listed" and not rec.get("Claimed By"):
             tier, window = "3_listed_inferred", stale_days
         elif status == "listed":
             tier, window = "4_listed_claimed", stale_days * 3
@@ -439,7 +439,7 @@ def build_row(aid, rec, verdict, txns, previous, human, *, today, ok):
     row["Award ID"] = aid
     row["Generated Award ID"] = generated_id(rec)
     row["Last Attempt Date"] = today
-    row["Auto Status"] = verdict.status
+    row["Automated Verdict"] = verdict.status
     row["Confidence"] = verdict.confidence
     row["Evidence"] = verdict.evidence
     signals = render_signals(verdict.signals)
@@ -455,7 +455,7 @@ def build_row(aid, rec, verdict, txns, previous, human, *, today, ok):
     row["Attempt Count"] = "0"
     row["Transaction Count"] = str(len(txns))
     baseline = transaction_baseline_amount(txns)
-    row["Transaction Baseline Amount"] = (
+    row["Peak Cumulative Obligation"] = (
         f"{baseline:.2f}" if baseline is not None else "unknown"
     )
     if txns:
@@ -470,11 +470,14 @@ def build_row(aid, rec, verdict, txns, previous, human, *, today, ok):
     row["Disagrees With Human"] = (
         human_status if human_status and human_status != verdict.status else ""
     )
-    # Verified Date marks when the VERDICT changed, not when we last looked.
-    if prev.get("Auto Status") != verdict.status or prev.get("Signals") != signals:
-        row["Verified Date"] = today
+    # Automated Verdict Date marks when the VERDICT changed, not when we last looked.
+    if (
+        prev.get("Automated Verdict") != verdict.status
+        or prev.get("Signals") != signals
+    ):
+        row["Automated Verdict Date"] = today
     else:
-        row["Verified Date"] = prev.get("Verified Date", today)
+        row["Automated Verdict Date"] = prev.get("Automated Verdict Date", today)
     return row
 
 
@@ -628,7 +631,7 @@ def main(argv=None):
             if not ok:
                 row["Last Error"] = verdict.evidence[:200]
                 unresolved += 1
-            if previous.get(aid, {}).get("Auto Status") != verdict.status:
+            if previous.get(aid, {}).get("Automated Verdict") != verdict.status:
                 changed += 1
             if row.get("Disagrees With Human"):
                 disagreements += 1
@@ -687,7 +690,7 @@ def main(argv=None):
         for r in rows:
             if r.get("Disagrees With Human"):
                 print(
-                    f"    {r['Award ID']}: auto={r['Auto Status']} human={r['Disagrees With Human']}"
+                    f"    {r['Award ID']}: auto={r['Automated Verdict']} human={r['Disagrees With Human']}"
                 )
 
     if not args.no_rebuild:

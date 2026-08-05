@@ -153,13 +153,13 @@ TRANSACTION_HISTORY_COLUMNS = award_transaction_facts.TRANSACTION_HISTORY_COLUMN
 
 LEDGER_COLUMNS = [
     "Award ID",
-    "Recipient",
-    "District",
+    "Recipient Name",
+    "Recipient Congressional District",
     sources.SOURCES_COLUMN,
-    "First Seen",
-    "Last Seen",
-    "Status",
-    "Status Detail",
+    "First Flagged Date",
+    "Last Flagged Date",
+    "Tracking Status",
+    "Tracking Status Detail",
     # Paired with Latest Action Date below, which is that modification's
     # action_date. There was once a separate Latest Modification Date column
     # sourced from award.period_of_performance.last_modified_date; it was
@@ -170,28 +170,28 @@ LEDGER_COLUMNS = [
     "Latest Modification Number",
     *TRANSACTION_HISTORY_COLUMNS,
     "Start Date",
-    "End Date",
+    "Current End Date",
     "Initial Reported End Date",
-    "Award Amount",
+    "Current Obligated Amount",
     "Total Outlays",
-    "Description",
+    "Award or Action Description",
     "Primary Detection Method",
-    "Detection",
-    "Business Categories",
-    "URL",
-    "Claiming Source",
-    "Claimed Status",
-    "Claimed Savings",
-    "Claim Date",
-    "Claim Revisions",
-    "First Award Amount",
-    "Transaction Baseline Amount",
-    "First End Date",
+    "Detection Evidence",
+    "Recipient Business Categories",
+    "USAspending URL",
+    "Claimed By",
+    "DOGE Claimed Status",
+    "DOGE Claimed Savings",
+    "DOGE Claim Date",
+    "DOGE Claim Revisions",
+    "Obligated Amount When First Flagged",
+    "Peak Cumulative Obligation",
+    "End Date When First Flagged",
     "Amount Trend",
     "End Date Trend",
-    "Claim Divergence",
-    "Auto Status",
-    "Auto Verified Date",
+    "DOGE Claim vs Outcome",
+    "Automated Verdict",
+    "Automated Verdict Date",
 ]
 
 # Earliest observed value of a field that REFRESHED_COLUMNS keeps current.
@@ -199,8 +199,8 @@ LEDGER_COLUMNS = [
 # which only ever sees one snapshot and so cannot replay history.
 # Maps the write-once column -> the refreshed column it snapshots.
 FIRST_VALUE_COLUMNS = {
-    "First Award Amount": "Award Amount",
-    "First End Date": "End Date",
+    "Obligated Amount When First Flagged": "Current Obligated Amount",
+    "End Date When First Flagged": "Current End Date",
     # The durable sidecar is authoritative, but carrying the value in snapshots
     # also keeps an accepted daily export self-describing.
     "Initial Reported End Date": "Initial Reported End Date",
@@ -214,14 +214,14 @@ TREND_THRESHOLD = 0.05
 # different source wins an award's row the claim fields arrive blank. Letting
 # them refresh would erase the claim from the published ledger.
 STICKY_COLUMNS = (
-    "Claiming Source",
-    "Claimed Status",
-    "Claimed Savings",
-    "Claim Date",
+    "Claimed By",
+    "DOGE Claimed Status",
+    "DOGE Claimed Savings",
+    "DOGE Claim Date",
 )
 
 # Claim fields a source can meaningfully restate (the claimant itself cannot).
-REVISABLE_COLUMNS = ("Claimed Status", "Claimed Savings", "Claim Date")
+REVISABLE_COLUMNS = ("DOGE Claimed Status", "DOGE Claimed Savings", "DOGE Claim Date")
 
 # Fields refreshed from the newest observation of an award. A blank value never
 # clobbers a populated one, so a field the API drops for a while keeps its last
@@ -232,19 +232,19 @@ REVISABLE_COLUMNS = ("Claimed Status", "Claimed Savings", "Claim Date")
 # snapshot written before 2026-07-30 lacks the column entirely, which reads as
 # blank here and therefore cannot erase a value a newer snapshot supplies.
 REFRESHED_COLUMNS = (
-    "Recipient",
-    "District",
+    "Recipient Name",
+    "Recipient Congressional District",
     "Latest Modification Number",
     *TRANSACTION_HISTORY_COLUMNS,
     "Start Date",
-    "End Date",
-    "Award Amount",
+    "Current End Date",
+    "Current Obligated Amount",
     "Total Outlays",
-    "Description",
+    "Award or Action Description",
     "Primary Detection Method",
-    "Detection",
-    "Business Categories",
-    "URL",
+    "Detection Evidence",
+    "Recipient Business Categories",
+    "USAspending URL",
 )
 
 
@@ -333,20 +333,22 @@ def parse_claim_from_description(desc):
     savings = re.search(r"Reported savings:\s*\$([\d,]+(?:\.\d+)?)", desc)
     claim_date = re.search(r"DOGE Action Date:\s*([\d/\-]+)", desc)
     return {
-        "Claiming Source": sources.DOGE,
-        "Claimed Status": status.group(1).strip() if status else "",
-        "Claimed Savings": normalize_savings(savings.group(1)) if savings else "",
-        "Claim Date": claim_date.group(1).strip() if claim_date else "",
+        "Claimed By": sources.DOGE,
+        "DOGE Claimed Status": status.group(1).strip() if status else "",
+        "DOGE Claimed Savings": normalize_savings(savings.group(1)) if savings else "",
+        "DOGE Claim Date": claim_date.group(1).strip() if claim_date else "",
     }
 
 
 def claim_fields(row):
     """Claim fields for a snapshot row, falling back to the description prose."""
-    if row.get("Claiming Source") or row.get("Claimed Status"):
+    if row.get("Claimed By") or row.get("DOGE Claimed Status"):
         fields = {col: row.get(col, "") for col in STICKY_COLUMNS}
-        fields["Claimed Savings"] = normalize_savings(fields.get("Claimed Savings"))
+        fields["DOGE Claimed Savings"] = normalize_savings(
+            fields.get("DOGE Claimed Savings")
+        )
         return fields
-    return parse_claim_from_description(row.get("Description", ""))
+    return parse_claim_from_description(row.get("Award or Action Description", ""))
 
 
 def _strip_money(value):
@@ -378,13 +380,13 @@ def derive_trends(rec):
     flags it.
     """
     observed_first, latest = (
-        _amount(rec.get("First Award Amount")),
-        _amount(rec.get("Award Amount")),
+        _amount(rec.get("Obligated Amount When First Flagged")),
+        _amount(rec.get("Current Obligated Amount")),
     )
     # A missing or zero first observation falls back to the transaction-derived
     # baseline; a baseline that is itself missing or zero lands in the "unknown"
     # branch below, where percentage change from zero is undefined anyway.
-    first = observed_first or _amount(rec.get("Transaction Baseline Amount"))
+    first = observed_first or _amount(rec.get("Peak Cumulative Obligation"))
     if first is None or latest is None or first == 0:
         rec["Amount Trend"] = "unknown"
     elif latest > first * (1 + TREND_THRESHOLD):
@@ -397,8 +399,10 @@ def derive_trends(rec):
     # Prefer the transaction-derived date from the award's base action. The
     # legacy First End Date remains the fallback for awards whose available
     # USAspending history carries no end date.
-    first_end = rec.get("Initial Reported End Date") or rec.get("First End Date", "")
-    latest_end = rec.get("End Date", "")
+    first_end = rec.get("Initial Reported End Date") or rec.get(
+        "End Date When First Flagged", ""
+    )
+    latest_end = rec.get("Current End Date", "")
     if not first_end or not latest_end:
         rec["End Date Trend"] = "unknown"
     elif latest_end > first_end:
@@ -411,18 +415,18 @@ def derive_trends(rec):
     # Claim divergence is only meaningful where somebody actually claimed a
     # cancellation. It is a comparison, not a judgement: a claimed award that
     # grew is retained and reported, never pruned.
-    if not rec.get("Claiming Source"):
-        rec["Claim Divergence"] = ""
+    if not rec.get("Claimed By"):
+        rec["DOGE Claim vs Outcome"] = ""
     elif rec["Amount Trend"] == "grew":
-        rec["Claim Divergence"] = "claimed_but_grew"
+        rec["DOGE Claim vs Outcome"] = "claimed_but_grew"
     elif rec["End Date Trend"] == "extended":
-        rec["Claim Divergence"] = "claimed_but_extended"
+        rec["DOGE Claim vs Outcome"] = "claimed_but_extended"
     elif rec["Amount Trend"] == "shrank":
-        rec["Claim Divergence"] = "claimed_and_shrank"
+        rec["DOGE Claim vs Outcome"] = "claimed_and_shrank"
     elif rec["Amount Trend"] == "unknown":
-        rec["Claim Divergence"] = "unknown"
+        rec["DOGE Claim vs Outcome"] = "unknown"
     else:
-        rec["Claim Divergence"] = "consistent"
+        rec["DOGE Claim vs Outcome"] = "consistent"
 
 
 def parse_claim_revisions(text):
@@ -455,7 +459,7 @@ def record_claim(rec, claim, date_str, latest):
     Claim Revisions string we just wrote - a value containing a semicolon
     would truncate on the way back out.
     """
-    if not rec.get("Claiming Source"):
+    if not rec.get("Claimed By"):
         for col in STICKY_COLUMNS:
             rec[col] = claim.get(col, "")
         latest.update({col: claim.get(col, "") for col in REVISABLE_COLUMNS})
@@ -470,8 +474,8 @@ def record_claim(rec, claim, date_str, latest):
             changes.append(f"{date_str} {col}={new}")
             latest[col] = new
     if changes:
-        existing = rec.get("Claim Revisions", "")
-        rec["Claim Revisions"] = "; ".join(filter(None, [existing, *changes]))
+        existing = rec.get("DOGE Claim Revisions", "")
+        rec["DOGE Claim Revisions"] = "; ".join(filter(None, [existing, *changes]))
 
 
 def is_reverted_experiment(date_str, row):
@@ -536,20 +540,20 @@ def load_verification(ledger=None):
     """
     overrides = {}
     for aid, r in load_auto_verification().items():
-        status = r.get("Auto Status", "")
+        status = r.get("Automated Verdict", "")
         if r.get("Confidence") != "high" or status not in AUTO_APPLICABLE:
             continue
-        claimed = (ledger or {}).get(aid, {}).get("Claiming Source")
+        claimed = (ledger or {}).get(aid, {}).get("Claimed By")
         if claimed and status not in AUTO_APPLICABLE_CLAIMED:
             continue
         overrides[aid] = (
             status,
-            f"[auto {r.get('Verified Date', '')}] {r.get('Evidence', '')}",
+            f"[auto {r.get('Automated Verdict Date', '')}] {r.get('Evidence', '')}",
         )
 
     if os.path.exists(VERIFICATION_PATH):
         for r in read_rows(VERIFICATION_PATH):
-            overrides[r["Award ID"]] = (r["Status"], r["Evidence"])
+            overrides[r["Award ID"]] = (r["Tracking Status"], r["Evidence"])
     return overrides
 
 
@@ -587,7 +591,7 @@ def classify(aid, rec, desc_history):
     # ingest (see EXPERIMENT_DATE), so no award can reach here because of it.
     if (
         sources.has_source(rec, sources.FPDS)
-        and rec["Last Seen"] == FPDS_LAST_GOOD_DATE
+        and rec["Last Flagged Date"] == FPDS_LAST_GOOD_DATE
     ):
         return (
             "source_retired",
@@ -596,7 +600,7 @@ def classify(aid, rec, desc_history):
         )
     return (
         "dropped_pending_review",
-        f"Disappeared after {rec['Last Seen']}; verify via USAspending transactions",
+        f"Disappeared after {rec['Last Flagged Date']}; verify via USAspending transactions",
     )
 
 
@@ -615,7 +619,7 @@ def build(update_only=False):
             # Reseed from what was already recorded, so a claim revised on
             # an earlier day is not appended again on every later run.
             latest_claim[r["Award ID"]] = parse_claim_revisions(
-                r.get("Claim Revisions", "")
+                r.get("DOGE Claim Revisions", "")
             )
         files = files[-1:]
 
@@ -639,7 +643,7 @@ def build(update_only=False):
             # archived Source/Detection fields support; legacy Local Mirror
             # rows remain explicitly legacy rather than gaining false detail.
             row["Primary Detection Method"] = infer_snapshot_method(row)
-            d = row.get("Description", "")
+            d = row.get("Award or Action Description", "")
             if d:
                 # dict-as-ordered-set: a full rebuild walks ~400 snapshots, and
                 # a membership scan over an award's growing description list is
@@ -650,20 +654,20 @@ def build(update_only=False):
                 rec = {
                     "Award ID": aid,
                     sources.SOURCES_COLUMN: row.get("Source", ""),
-                    "First Seen": date_str,
-                    "Last Seen": date_str,
-                    "Status": "",
-                    "Status Detail": "",
+                    "First Flagged Date": date_str,
+                    "Last Flagged Date": date_str,
+                    "Tracking Status": "",
+                    "Tracking Status Detail": "",
                     # Same source of truth as the refresh branch below, so a
                     # new column can never be present on update but missing
                     # on an award's first sighting.
                     **{col: row.get(col, "") for col in REFRESHED_COLUMNS},
                     **{col: "" for col in STICKY_COLUMNS},
-                    "Claim Revisions": "",
+                    "DOGE Claim Revisions": "",
                 }
                 ledger[aid] = rec
             else:
-                rec["Last Seen"] = max(rec["Last Seen"], date_str)
+                rec["Last Flagged Date"] = max(rec["Last Flagged Date"], date_str)
                 sources.add_source(rec, row.get("Source", ""))
                 for col in REFRESHED_COLUMNS:
                     if row.get(col):
@@ -688,10 +692,12 @@ def build(update_only=False):
             rec["Primary Detection Method"] = infer_snapshot_method(rec)
         # Every award carries its machine read, including listed ones - that
         # is how a false positive still in the daily snapshot becomes visible.
-        rec["Auto Status"] = auto.get(aid, {}).get("Auto Status", "")
-        rec["Auto Verified Date"] = auto.get(aid, {}).get("Verified Date", "")
-        rec["Transaction Baseline Amount"] = auto.get(aid, {}).get(
-            "Transaction Baseline Amount", ""
+        rec["Automated Verdict"] = auto.get(aid, {}).get("Automated Verdict", "")
+        rec["Automated Verdict Date"] = auto.get(aid, {}).get(
+            "Automated Verdict Date", ""
+        )
+        rec["Peak Cumulative Obligation"] = auto.get(aid, {}).get(
+            "Peak Cumulative Obligation", ""
         )
         # Resolved values are write-once on the incremental path. A blank
         # ledger field can be backfilled later, while a missing/blank sidecar
@@ -710,25 +716,29 @@ def build(update_only=False):
                 rec[column] = facts.get(column, "")
 
         if aid in latest:
-            rec["Status"], rec["Status Detail"] = "listed", ""
+            rec["Tracking Status"], rec["Tracking Status Detail"] = "listed", ""
         elif aid in overrides:
             # An adjudicated verdict always applies, even over an existing
             # one: a status assigned months ago must be able to change when a
             # termination is later vacated or rescinded.
-            rec["Status"], rec["Status Detail"] = overrides[aid]
-        elif rec["Status"] in ("", "listed", "dropped_pending_review"):
-            rec["Status"], rec["Status Detail"] = classify(aid, rec, desc_history)
+            rec["Tracking Status"], rec["Tracking Status Detail"] = overrides[aid]
+        elif rec["Tracking Status"] in ("", "listed", "dropped_pending_review"):
+            rec["Tracking Status"], rec["Tracking Status Detail"] = classify(
+                aid, rec, desc_history
+            )
 
     for rec in ledger.values():
         # After the claim fields have been captured: parse_claim_from_description
         # reads the *snapshot* row, so stripping here cannot starve it, and the
         # archived snapshots keep the original prose either way.
-        rec["Description"] = strip_claim_prefix(rec.get("Description"))
-        rec["URL"] = canonical_usaspending_url(rec.get("URL"))
+        rec["Award or Action Description"] = strip_claim_prefix(
+            rec.get("Award or Action Description")
+        )
+        rec["USAspending URL"] = canonical_usaspending_url(rec.get("USAspending URL"))
         derive_trends(rec)
 
     rows = sorted(
-        ledger.values(), key=lambda r: (r["Recipient"].lower(), r["Award ID"])
+        ledger.values(), key=lambda r: (r["Recipient Name"].lower(), r["Award ID"])
     )
     bad_methods = sorted(
         {
@@ -747,7 +757,7 @@ def build(update_only=False):
         w.writeheader()
         w.writerows(rows)
 
-    counts = Counter(r["Status"] for r in rows)
+    counts = Counter(r["Tracking Status"] for r in rows)
     print(f"Master ledger written: {LEDGER_PATH}")
     print(f"  {len(rows)} awards total (latest snapshot {latest_date}: {len(latest)})")
     for status, n in counts.most_common():
