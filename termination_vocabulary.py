@@ -39,7 +39,7 @@ import re
 # Asserts a termination/stop-work happened. Narrow on purpose: every
 # alternative carries a qualifier, so a bare "terminated" does not match.
 TERM_TEXT = re.compile(
-    r"terminat(?:e|ed|ion)\s+for\s+convenience|\bt4c\b|stop[\s-]?work|"
+    r"terminat(?:e|ed|ion)[\s-]+for[\s-]+convenience|\bt4c\b|stop[\s-]?work|"
     r"termination\s+settlement|notice\s+of\s+termination",
     re.IGNORECASE,
 )

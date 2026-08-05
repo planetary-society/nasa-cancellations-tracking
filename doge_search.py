@@ -1,17 +1,21 @@
-import requests
-import pandas as pd
-import sys
-from typing import List, Dict, Any, Optional, Tuple
-import time
-from contract_query import ContractQuery, FINAL_COLUMNS
-import datetime
-from urllib.parse import urlparse, parse_qs
 import csv
+import datetime
+import sys
+import time
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import pandas as pd
+import requests
+
+from contract_query import FINAL_COLUMNS, ContractQuery
+from detection_methods import EXTERNAL_CLAIM
+from tracking_window import to_iso
 from utils import (
-    smart_sentence_case,
+    award_id_from_generated_id,
     contracts_titlecase,
     format_as_currency,
-    award_id_from_generated_id,
+    smart_sentence_case,
 )
 
 # Default DoGE API settings
@@ -19,6 +23,15 @@ DOGE_CONTRACTS_ENDPOINT = "https://api.doge.gov/savings/contracts"
 DOGE_GRANTS_ENDPOINT = "https://api.doge.gov/savings/grants"
 DOGE_PER_PAGE = 500
 DOGE_REQUEST_TIMEOUT = 30
+
+# Non-ISO date forms this API has been observed to return for deleted_date and
+# date. The ISO form is what it sends today; these are handed to the shared
+# to_iso as fallbacks, so every accepted form for the `action_date` column
+# still parses through one function. An unreadable date yields "" rather than
+# raising, which keeps one malformed record from aborting the run - and "" is
+# not a free pass downstream, since the tracking-window gate treats an unknown
+# action date as out-of-window and quarantines the row by name.
+_DOGE_FALLBACK_DATE_FORMATS = ("%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y")
 
 
 class DOGEQuery(ContractQuery):
@@ -35,7 +48,7 @@ class DOGEQuery(ContractQuery):
 
     def __init__(
         self,
-        final_columns: List[str] = FINAL_COLUMNS,
+        final_columns: list[str] = FINAL_COLUMNS,
         contracts_endpoint: str = DOGE_CONTRACTS_ENDPOINT,
         grants_endpoint: str = DOGE_GRANTS_ENDPOINT,
         per_page: int = DOGE_PER_PAGE,
@@ -73,7 +86,7 @@ class DOGEQuery(ContractQuery):
         if self.verbose:
             print(message, file=sys.stderr, end=end)
 
-    def _is_nasa_agency(self, item: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    def _is_nasa_agency(self, item: dict[str, Any]) -> tuple[bool, str | None]:
         """
         Checks if an item from the DoGE API belongs to NASA, using the
         hardcoded agency names (case-insensitive check on 'agency' field).
@@ -95,7 +108,7 @@ class DOGEQuery(ContractQuery):
                 return True, agency_value  # Return match and the original agency name
         return False, None  # No match or agency field not found/not string
 
-    def _extract_award_id_from_contract_url(self, url: Optional[str]) -> str:
+    def _extract_award_id_from_contract_url(self, url: str | None) -> str:
         """
         Attempts to extract the 'PIID' parameter value from a URL string.
 
@@ -123,7 +136,7 @@ class DOGEQuery(ContractQuery):
                 # award_id remains ""
         return award_id
 
-    def _extract_usa_spending_award_id_from_grant_url(self, url: Optional[str]) -> str:
+    def _extract_usa_spending_award_id_from_grant_url(self, url: str | None) -> str:
         """
         Attempts to extract the FAIN from a USAspending award URL.
 
@@ -157,8 +170,8 @@ class DOGEQuery(ContractQuery):
         return award_id
 
     def _standardize_doge_item(
-        self, item: Dict[str, Any], item_type: str, agency_name: str
-    ) -> Optional[Dict[str, Any]]:
+        self, item: dict[str, Any], item_type: str, agency_name: str
+    ) -> dict[str, Any] | None:
         """
         Transforms a raw DoGE contract or grant dictionary into the standardized schema,
         including extracting the Award ID for contracts.
@@ -171,7 +184,7 @@ class DOGEQuery(ContractQuery):
         Returns:
             A dictionary conforming to self.final_columns or None if invalid type.
         """
-        standardized: Optional[Dict[str, Any]] = None  # Initialize
+        standardized: dict[str, Any] | None = None  # Initialize
 
         if item_type == "Contract":
             # Extract Award ID specifically for contracts from fpds_link
@@ -200,6 +213,16 @@ class DOGEQuery(ContractQuery):
                 + smart_sentence_case(item.get("description").replace("\n", " ")),
                 "agency": agency_name,
                 "claim_date": item.get("deleted_date"),
+                # DOGE asserts a cancellation rather than observing a federal
+                # action, so the assertion date IS the action being tracked -
+                # it is the same value as claim_date by construction, named
+                # separately because the ingest gate reads one contract for
+                # every source.
+                "action_date": to_iso(
+                    item.get("deleted_date"), _DOGE_FALLBACK_DATE_FORMATS
+                ),
+                "detection_basis": "evidence",
+                "detection_method": EXTERNAL_CLAIM,
             }
         elif item_type == "Grant":
             # Grants get an empty Award ID in this implementation
@@ -231,6 +254,11 @@ class DOGEQuery(ContractQuery):
                 + smart_sentence_case(item.get("description").replace("\n", " ")),
                 "agency": agency_name,
                 "claim_date": item.get("date"),
+                # Grants report the assertion date under a different key than
+                # contracts do; both mean "when DOGE claimed this".
+                "action_date": to_iso(item.get("date"), _DOGE_FALLBACK_DATE_FORMATS),
+                "detection_basis": "evidence",
+                "detection_method": EXTERNAL_CLAIM,
             }
             time.sleep(0.1)  # Optional delay to avoid overwhelming the API
         else:
@@ -249,7 +277,7 @@ class DOGEQuery(ContractQuery):
 
     def _fetch_and_process_endpoint(
         self, endpoint_url: str, data_key: str, item_type_name: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Fetches all pages for a single DoGE endpoint, filters for NASA items,
         and standardizes them. Internal helper method.

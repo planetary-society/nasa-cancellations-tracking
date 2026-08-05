@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 
-import pandas as pd
 import csv
-import sys
-import os
 import glob
+import os
 import re
-from datetime import date
-from typing import Dict, List, Optional
+import sys
 from abc import ABC, abstractmethod
+from datetime import date
+
+import pandas as pd
+
+from detection_methods import DETECTION_METHODS
 
 
-def load_snapshot(path: str) -> Dict[str, dict]:
+def load_snapshot(path: str) -> dict[str, dict]:
     """
     Load a consolidated snapshot CSV into a dict keyed by Award ID.
 
@@ -23,8 +25,8 @@ def load_snapshot(path: str) -> Dict[str, dict]:
 
 
 def find_most_recent_csv(
-    directory: str, filename_base: str, exclude_file: Optional[str] = None
-) -> Optional[str]:
+    directory: str, filename_base: str, exclude_file: str | None = None
+) -> str | None:
     """
     Find the most recent CSV file matching the base name pattern.
 
@@ -96,7 +98,92 @@ FINAL_COLUMNS = [
     "description",  # Description of the contract or grant purpose
     "agency",  # The agency name as found in the source record
     "claim_date",  # Date the source asserted the cancellation (claim sources only)
+    # --- Tracking-window enforcement contract (see tracking_window.py) ---
+    # Every source must declare these two. They are not descriptive metadata:
+    # search.py gates ingest on them, so a source that leaves them blank has
+    # its rows quarantined rather than admitted. That is the point - the window
+    # used to be enforced source by source, and the sources that had no gate
+    # (NPDV, DOGE) leaked pre-window actions straight into the ledger.
+    "action_date",  # ISO date of the federal action this row detected
+    "detection_basis",  # "evidence" or "inference" - see below
+    "detection_method",  # structured primary signal; see detection_methods.py
 ]
+
+# What a source is claiming when it sets `detection_basis`:
+#
+#   evidence  - the source saw a termination action directly: an FPDS action
+#               code of F/N, or termination language in the transaction text.
+#               Gated on action_date alone. A retroactive period-of-performance
+#               end date is an ordinary closeout artifact here, and rejecting
+#               those would evict real cancellations.
+#
+#   inference - the source deduced a cancellation from the shape of the data
+#               with no termination evidence at all: an end date yanked
+#               backwards, or money clawed back mid-performance. Gated on
+#               action_date AND on the effect landing inside the window,
+#               because an in-window mod can encode a pre-window decision.
+#
+# A claim source (DOGE) asserts a cancellation on someone else's authority
+# rather than observing one, so it declares "evidence" and carries the claim
+# date as its action date - the assertion is the action being tracked.
+DETECTION_BASES = ("evidence", "inference")
+
+
+def validate_source_frame(source: str, df: pd.DataFrame) -> None:
+    """Check a source's output against the tracking-window contract above.
+
+    Lives here, beside the columns it validates, rather than in the consumer
+    that happens to read them - otherwise every new consumer re-derives what a
+    valid row is, and a source with a typo (`"Evidence"`) survives the source
+    boundary to abort the run minutes later, mid-enrichment, on one arbitrary
+    award.
+
+    Raises rather than filtering: a source that cannot describe its own
+    detections is broken, and the fail-loud policy says a broken source aborts
+    the run instead of quietly shrinking the snapshot.
+    """
+    missing = [
+        col
+        for col in ("action_date", "detection_basis", "detection_method")
+        if col not in df
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Source '{source}' returned no {' or '.join(missing)} column. "
+            f"Every source must declare the action it detected and how it "
+            f"detected it, so the tracking window can be enforced at ingest; "
+            f"see contract_query.FINAL_COLUMNS and tracking_window.py."
+        )
+
+    bad = sorted(
+        {
+            str(value)
+            for value in df["detection_basis"]
+            if str(value) not in DETECTION_BASES
+        }
+    )
+    if bad:
+        raise RuntimeError(
+            f"Source '{source}' declared detection_basis {bad}; expected one "
+            f"of {list(DETECTION_BASES)}. The ingest gate cannot tell whether "
+            f"the effect gate applies, and guessing would either admit "
+            f"pre-window closeouts or evict real cancellations."
+        )
+
+    bad_methods = sorted(
+        {
+            str(value)
+            for value in df["detection_method"]
+            if str(value) not in DETECTION_METHODS
+        }
+    )
+    if bad_methods:
+        raise RuntimeError(
+            f"Source '{source}' declared detection_method {bad_methods}; expected "
+            f"one of {list(DETECTION_METHODS)}. Every included award must name "
+            f"the primary signal that caused its inclusion."
+        )
+
 
 # --- Base Class Definition ---
 
@@ -108,7 +195,7 @@ class ContractQuery(ABC):
     retrieve and standardize data according to specific source requirements.
     """
 
-    def __init__(self, final_columns: List[str] = FINAL_COLUMNS):
+    def __init__(self, final_columns: list[str] = FINAL_COLUMNS):
         """
         Initializes the query object.
 
@@ -129,8 +216,8 @@ class ContractQuery(ABC):
             data: The DataFrame to export.
             filename_base: The base name of the output CSV file.
         """
-        import tempfile
         import shutil
+        import tempfile
 
         # Ensure the data directory exists
         os.makedirs("data", exist_ok=True)
@@ -187,4 +274,3 @@ class ContractQuery(ABC):
 
         This method MUST be implemented by subclasses.
         """
-        pass

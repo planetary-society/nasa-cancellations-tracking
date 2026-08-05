@@ -307,14 +307,14 @@ def test_clawback_fraction_is_inclusive_and_prematurity_is_strict(
     assert (hit is not None) is expected
     if expected:
         assert hit.fraction == Decimal("0.25")
-        assert hit.pre_clawback_total == Decimal("100000")
+        assert hit.pre_clawback_total == Decimal(100000)
 
 
 def test_clawback_without_current_end_date_is_unclassifiable():
     """Real live shape: 80NSSC25M7006 has a valid detail record but no end."""
     row = txn("80NSSC25M7006", "P00001", "D", amount=-1_188_655)
     award = SimpleNamespace(
-        award_amount=Decimal("0"),
+        award_amount=Decimal(0),
         end_date=None,
     )
 
@@ -334,14 +334,14 @@ def test_brown_same_action_end_rewrite_does_not_hide_full_clawback():
         generated_id="ASST_NON_80NSSC25K0030_080",
     )
     award = SimpleNamespace(
-        award_amount=Decimal("0"),
+        award_amount=Decimal(0),
         end_date=date(2026, 1, 19),
     )
 
     hit = Q(client=object())._qualify_clawback(row, award)
 
     assert hit is not None
-    assert hit.fraction == Decimal("1")
+    assert hit.fraction == Decimal(1)
 
 
 def test_clawback_award_lookup_failure_propagates(monkeypatch):
@@ -402,7 +402,7 @@ def test_clawback_batch_lookup_is_limited_to_threshold_candidates(monkeypatch):
             return [
                 SimpleNamespace(
                     award_identifier=aid,
-                    award_amount=Decimal("75000"),
+                    award_amount=Decimal(75000),
                     end_date=date(2026, 12, 31),
                 )
                 for aid in seen
@@ -743,7 +743,7 @@ def test_brown_premature_clawback_is_emitted_without_synthetic_term_text(
     )
     awards = {
         "ASST_NON_80NSSC25K0030_080": SimpleNamespace(
-            award_amount=Decimal("0"),
+            award_amount=Decimal(0),
             end_date=date(2028, 7, 21),
         ),
         "ASST_NON_POST-EXPIRY_080": SimpleNamespace(
@@ -817,7 +817,7 @@ def test_keyword_and_clawback_overlap_keeps_newest_signal(stub):
     hit = SimpleNamespace(
         transaction=new_clawback,
         fraction=Decimal("0.25"),
-        pre_clawback_total=Decimal("100000"),
+        pre_clawback_total=Decimal(100000),
     )
 
     df = stub({"stop work": [old_keyword]}, [], [hit]).search()
@@ -844,6 +844,7 @@ def test_dead_and_duplicate_keywords_stay_removed():
     assert "stop-work" not in utq.SEARCH_KEYWORDS
     assert utq.SEARCH_KEYWORDS == [
         "terminate for convenience",
+        "terminate-for-convenience",
         "termination for convenience",
         "stop work",
     ]

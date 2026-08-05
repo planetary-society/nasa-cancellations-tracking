@@ -34,21 +34,24 @@ distinguish "no terminations" from "source down" (fail-loud policy adopted
 after the FPDS silent failure).
 """
 
-import csv
-import re
 import sys
-import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from itertools import islice
-from typing import Iterable, List, Optional, Sequence
 
 import pandas as pd
 from usaspending import Award, Transaction, TransactionsSearch, USASpendingClient
 
-from contract_query import ContractQuery, FINAL_COLUMNS
+from contract_query import FINAL_COLUMNS, ContractQuery
+from detection_methods import (
+    OBLIGATION_CLAWBACK,
+    TERMINATION_ACTION_CODE,
+    TERMINATION_LANGUAGE,
+)
 from termination_vocabulary import is_cause, is_reversal, is_vacatur
+from tracking_window import TRACKING_WINDOW_START_DATE, to_iso
 
 # Plain strings sent to the API as `filters.keywords`; they cannot be regexes.
 # The narrow classification patterns live in termination_vocabulary.py.
@@ -62,6 +65,7 @@ from termination_vocabulary import is_cause, is_reversal, is_vacatur
 # keywords cover the same 92 awards in three sweeps instead of five.
 SEARCH_KEYWORDS = [
     "terminate for convenience",
+    "terminate-for-convenience",
     "termination for convenience",
     "stop work",
 ]
@@ -81,44 +85,9 @@ EXCLUDED_ACTION_CODES = {"E", "X"}
 ACTION_TYPE_SORT = "Action Type"
 TRANSACTION_AMOUNT_SORT = "Transaction Amount"
 PAGE_SIZE = 100
-CLAWBACK_AMOUNT_THRESHOLD = Decimal("-10000")
+CLAWBACK_AMOUNT_THRESHOLD = Decimal(-10000)
 CLAWBACK_FRACTION_THRESHOLD = Decimal("0.25")
 SAME_ACTION_END_REWRITE_LAG = timedelta(days=1)
-
-# The compact transaction-history endpoint omits period-of-performance dates.
-# The search-download endpoint returns the underlying transaction rows, so it
-# is the public, mirror-free source for an award's earliest reported end date.
-INITIAL_END_DATE_START = "2007-10-01"
-INITIAL_END_DATE_DOWNLOAD_TIMEOUT = 1800
-INITIAL_END_DATE_POLL_INTERVAL = 5
-
-INITIAL_END_DATE_CATEGORIES = {
-    "contract": "contracts",
-    "idv": "idvs",
-    "assistance": "grants",
-}
-
-_MOD_NUMBER_PARTS = re.compile(r"(\d+)")
-_ZERO_MODIFICATION = re.compile(r"0+")
-
-_AWARD_ID_FIELDS = (
-    "award_id_piid",
-    "award_id_fain",
-    "award_id_uri",
-    "award_id",
-)
-_TRANSACTION_ID_FIELDS = (
-    "contract_transaction_unique_key",
-    "assistance_transaction_unique_key",
-    "idv_transaction_unique_key",
-    "transaction_unique_key",
-    "transaction_id",
-)
-_END_DATE_FIELDS = ("period_of_performance_current_end_date",)
-_IDV_END_DATE_FIELDS = (
-    "last_date_to_order",
-    "period_of_performance_current_end_date",
-)
 
 NASA_AGENCY_FILTER = [
     {
@@ -138,259 +107,13 @@ class ClawbackHit:
     pre_clawback_total: Decimal
 
 
-@dataclass(frozen=True)
-class InitialEndDateTarget:
-    """One award whose transaction download should be inspected."""
-
-    award_id: str
-    generated_award_id: str
-    category: str
-    lookup_award_id: str = ""
-
-    @property
-    def native_award_id(self) -> str:
-        """PIID/FAIN used by search-download filters and transaction CSVs."""
-        return self.lookup_award_id or self.award_id
-
-
-@dataclass(frozen=True)
-class InitialEndDateResult:
-    """The earliest reported end date and the transaction that supplied it."""
-
-    award_id: str
-    generated_award_id: str
-    category: str
-    initial_end_date: str
-    transaction_id: str
-    action_date: str
-    modification_number: str
-    basis: str
-    status: str
-
-
-def initial_end_date_category(generated_award_id: str) -> str:
-    """Map a USAspending generated award id to its download category."""
-    gid = (generated_award_id or "").upper()
-    if gid.startswith("CONT_AWD_"):
-        return "contract"
-    if gid.startswith("CONT_IDV_"):
-        return "idv"
-    if gid.startswith("ASST_NON_"):
-        return "assistance"
-    return ""
-
-
-def _header_key(value: str) -> str:
-    """Canonicalise either raw download headers or display-name headers."""
-    return re.sub(r"[^a-z0-9]+", "_", (value or "").lstrip("\ufeff").lower()).strip(
-        "_"
-    )
-
-
-def _first_value(row: dict, fields: Sequence[str]) -> str:
-    for field in fields:
-        value = row.get(field)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    return ""
-
-
-def _iso_date(value: str, field: str) -> str:
-    """Return YYYY-MM-DD for an ISO date/datetime, failing on malformed data."""
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    candidate = text[:10]
-    try:
-        return date.fromisoformat(candidate).isoformat()
-    except ValueError as exc:
-        raise RuntimeError(f"USAspending download returned invalid {field}: {text!r}") from exc
-
-
-def _natural_modification_key(value: str) -> tuple:
-    return tuple(
-        (1, int(part)) if part.isdigit() else (0, part.casefold())
-        for part in _MOD_NUMBER_PARTS.split(str(value or ""))
-        if part
-    )
-
-
-def _download_row_sort_key(row: dict) -> tuple:
-    return (
-        _iso_date(row.get("action_date", ""), "action_date"),
-        _natural_modification_key(row.get("modification_number", "")),
-        row.get("transaction_id", ""),
-    )
-
-
-def select_initial_reported_end_date(
-    target: InitialEndDateTarget, rows: Sequence[dict]
-) -> InitialEndDateResult:
-    """Select a base-transaction date, else the earliest nonblank reported date."""
-    if not rows:
-        raise RuntimeError(
-            f"USAspending transaction download omitted award {target.award_id!r}"
-        )
-
-    ordered = sorted(rows, key=_download_row_sort_key)
-    dated = []
-    for row in ordered:
-        end_date = _iso_date(row.get("end_date", ""), "end_date")
-        if end_date:
-            dated.append((row, end_date))
-
-    if not dated:
-        return InitialEndDateResult(
-            target.award_id,
-            target.generated_award_id,
-            target.category,
-            "",
-            "",
-            "",
-            "",
-            "",
-            "no_reported_end_date",
-        )
-
-    base = [
-        item
-        for item in dated
-        if _ZERO_MODIFICATION.fullmatch(
-            str(item[0].get("modification_number", "") or "").strip()
-        )
-    ]
-    row, end_date = base[0] if base else dated[0]
-    return InitialEndDateResult(
-        target.award_id,
-        target.generated_award_id,
-        target.category,
-        end_date,
-        row.get("transaction_id", ""),
-        _iso_date(row.get("action_date", ""), "action_date"),
-        row.get("modification_number", ""),
-        "base_transaction" if base else "earliest_nonblank",
-        "resolved",
-    )
-
-
-def _transaction_download_rows(
-    files: Iterable[str], category: str, expected_award_ids: set[str]
-) -> dict[str, list[dict]]:
-    """Read transaction CSVs from one completed USAspending download job."""
-    expected = {award_id.casefold(): award_id for award_id in expected_award_ids}
-    by_award = {award_id: [] for award_id in expected_award_ids}
-    found_transaction_csv = False
-
-    for path in files:
-        if not str(path).lower().endswith(".csv"):
-            continue
-        with open(path, newline="", encoding="utf-8-sig") as fh:
-            reader = csv.DictReader(fh)
-            headers = {_header_key(name) for name in (reader.fieldnames or [])}
-            end_fields = _IDV_END_DATE_FIELDS if category == "idv" else _END_DATE_FIELDS
-            required_groups = (
-                _AWARD_ID_FIELDS,
-                _TRANSACTION_ID_FIELDS,
-                ("action_date",),
-                ("modification_number",),
-                end_fields,
-            )
-            if not all(any(field in headers for field in group) for group in required_groups):
-                continue
-
-            found_transaction_csv = True
-            for raw in reader:
-                row = {_header_key(key): value for key, value in raw.items() if key}
-                downloaded_id = _first_value(row, _AWARD_ID_FIELDS)
-                award_id = expected.get(downloaded_id.casefold())
-                if not award_id:
-                    continue
-                by_award[award_id].append(
-                    {
-                        "transaction_id": _first_value(row, _TRANSACTION_ID_FIELDS),
-                        "action_date": _first_value(row, ("action_date",)),
-                        "modification_number": _first_value(
-                            row, ("modification_number",)
-                        ),
-                        "end_date": _first_value(row, end_fields),
-                    }
-                )
-
-    if not found_transaction_csv:
-        raise RuntimeError(
-            f"USAspending {category} download contained no transaction CSV with "
-            "award, transaction, action-date, modification, and end-date columns"
-        )
-    missing = sorted(award_id for award_id, rows in by_award.items() if not rows)
-    if missing:
-        raise RuntimeError(
-            f"USAspending {category} download omitted requested award(s): "
-            f"{', '.join(missing)}"
-        )
-    return by_award
-
-
-def fetch_initial_reported_end_dates(
-    client: USASpendingClient,
-    targets: Sequence[InitialEndDateTarget],
-    *,
-    end_date: Optional[str] = None,
-) -> List[InitialEndDateResult]:
-    """Batch-download transaction histories and derive one result per target."""
-    grouped = {category: [] for category in INITIAL_END_DATE_CATEGORIES}
-    for target in targets:
-        if target.category not in grouped:
-            raise ValueError(f"Unsupported award category: {target.category!r}")
-        grouped[target.category].append(target)
-
-    results = []
-    through = end_date or date.today().isoformat()
-    with tempfile.TemporaryDirectory(prefix="initial-end-dates-") as destination:
-        for category, category_targets in grouped.items():
-            if not category_targets:
-                continue
-            query = client.awards.search()
-            query = getattr(query, INITIAL_END_DATE_CATEGORIES[category])()
-            # Although the API contract documents quoted award ids as its
-            # exact-match syntax, the production download worker currently
-            # fails every job carrying those quotes (validated 2026-07-31).
-            # Send the native ids unquoted and enforce exactness while parsing
-            # the CSV: unrelated fuzzy matches are ignored and a missing exact
-            # id aborts the batch below.
-            query = query.award_ids(
-                *(target.native_award_id for target in category_targets)
-            ).time_period(INITIAL_END_DATE_START, through)
-            job = client.downloads.search(
-                query,
-                spending_level=["transactions"],
-                destination_dir=destination,
-            )
-            files = job.wait_for_completion(
-                timeout=INITIAL_END_DATE_DOWNLOAD_TIMEOUT,
-                poll_interval=INITIAL_END_DATE_POLL_INTERVAL,
-                cleanup_zip=True,
-            )
-            rows_by_award = _transaction_download_rows(
-                files,
-                category,
-                {target.native_award_id for target in category_targets},
-            )
-            results.extend(
-                select_initial_reported_end_date(
-                    target, rows_by_award[target.native_award_id]
-                )
-                for target in category_targets
-            )
-    return results
-
-
 class USASpendingTerminationsQuery(ContractQuery):
     """Queries USAspending for NASA terminations and grant clawbacks."""
 
     def __init__(
         self,
-        final_columns: List[str] = FINAL_COLUMNS,
-        client: Optional[USASpendingClient] = None,
+        final_columns: list[str] = FINAL_COLUMNS,
+        client: USASpendingClient | None = None,
     ):
         super().__init__(final_columns)
         self._owns_client = client is None
@@ -414,7 +137,7 @@ class USASpendingTerminationsQuery(ContractQuery):
 
     def _fetch_keyword(
         self, keyword: str, start_date: str, end_date: str
-    ) -> List[Transaction]:
+    ) -> list[Transaction]:
         """Fetch all transaction pages for one keyword."""
         return (
             self._query(start_date, end_date)
@@ -437,14 +160,14 @@ class USASpendingTerminationsQuery(ContractQuery):
 
     def _fetch_clawback_candidates(
         self, start_date: str, end_date: str
-    ) -> List[Transaction]:
+    ) -> list[Transaction]:
         """Read ascending grant transactions through the -$10,000 cutoff."""
         query = self._clawback_query(start_date, end_date).order_by(
             "federal_action_obligation", "asc"
         )
         iterator = iter(query)
-        results: List[Transaction] = []
-        previous_amount: Optional[Decimal] = None
+        results: list[Transaction] = []
+        previous_amount: Decimal | None = None
         page = 0
 
         while True:
@@ -473,17 +196,17 @@ class USASpendingTerminationsQuery(ContractQuery):
         return results
 
     @staticmethod
-    def _amount_sort_key(amount: Optional[Decimal]) -> tuple[bool, Decimal]:
+    def _amount_sort_key(amount: Decimal | None) -> tuple[bool, Decimal]:
         """Match USAspending's ordering, where missing amounts sort last."""
-        return (amount is None, amount or Decimal("0"))
+        return (amount is None, amount or Decimal(0))
 
     @classmethod
     def _assert_amounts_sorted(
         cls,
         rows: Sequence[Transaction],
         page: int,
-        previous_amount: Optional[Decimal] = None,
-    ) -> Optional[Decimal]:
+        previous_amount: Decimal | None = None,
+    ) -> Decimal | None:
         """Fail loudly if the API stops honoring Transaction Amount order."""
         amounts = [row.federal_action_obligation for row in rows]
         keys = [cls._amount_sort_key(amount) for amount in amounts]
@@ -505,9 +228,7 @@ class USASpendingTerminationsQuery(ContractQuery):
         return amounts[-1] if amounts else previous_amount
 
     @staticmethod
-    def _qualify_clawback(
-        transaction: Transaction, award: Award
-    ) -> Optional[ClawbackHit]:
+    def _qualify_clawback(transaction: Transaction, award: Award) -> ClawbackHit | None:
         """Apply the inclusive fraction and explicit prematurity rules."""
         deob = transaction.federal_action_obligation
         current_total = award.award_amount
@@ -557,7 +278,7 @@ class USASpendingTerminationsQuery(ContractQuery):
             return None
         return ClawbackHit(transaction, fraction, pre_clawback_total)
 
-    def _fetch_clawbacks(self, start_date: str, end_date: str) -> List[ClawbackHit]:
+    def _fetch_clawbacks(self, start_date: str, end_date: str) -> list[ClawbackHit]:
         """Batch-fetch awards only for threshold-crossing grant transactions."""
         candidates = self._fetch_clawback_candidates(start_date, end_date)
         if not candidates:
@@ -621,10 +342,10 @@ class USASpendingTerminationsQuery(ContractQuery):
         return (query.count() + PAGE_SIZE - 1) // PAGE_SIZE
 
     @staticmethod
-    def _codes(rows: Sequence[Transaction]) -> List[str]:
+    def _codes(rows: Sequence[Transaction]) -> list[str]:
         return [(row.action_type or "").upper() for row in rows]
 
-    def _page(self, query: TransactionsSearch, page: int) -> List[Transaction]:
+    def _page(self, query: TransactionsSearch, page: int) -> list[Transaction]:
         """One page of `query`, cached for the life of a seek.
 
         The two binary searches probe from the same midpoint and only diverge
@@ -639,7 +360,7 @@ class USASpendingTerminationsQuery(ContractQuery):
             self._page_cache[page] = rows
         return rows
 
-    def _first_code(self, query: TransactionsSearch, page: int) -> Optional[str]:
+    def _first_code(self, query: TransactionsSearch, page: int) -> str | None:
         rows = self._page(query, page)
         if not rows:
             return None
@@ -666,7 +387,7 @@ class USASpendingTerminationsQuery(ContractQuery):
 
     def _fetch_termination_codes(
         self, start_date: str, end_date: str
-    ) -> List[Transaction]:
+    ) -> list[Transaction]:
         """Fetch transactions carrying either cancellation action code.
 
         USAspending has no filter for action type, but it does sort by it, so
@@ -680,14 +401,14 @@ class USASpendingTerminationsQuery(ContractQuery):
         if not total_pages:
             return []
 
-        results: List[Transaction] = []
+        results: list[Transaction] = []
         for code in TERMINATION_ACTION_CODES:
             results.extend(self._fetch_code_block(query, code, total_pages))
         return results
 
     def _fetch_code_block(
         self, query: TransactionsSearch, code: str, total_pages: int
-    ) -> List[Transaction]:
+    ) -> list[Transaction]:
         """Fetch one arbitrary action-code block from a sorted query.
 
         Starting one page before the lower bound catches a block that begins
@@ -696,7 +417,7 @@ class USASpendingTerminationsQuery(ContractQuery):
         one-character successor code is needed.
         """
         start = max(1, self._lower_bound(query, code, total_pages) - 1)
-        results: List[Transaction] = []
+        results: list[Transaction] = []
         last_page = start
 
         for page in range(start, total_pages + 1):
@@ -781,7 +502,7 @@ class USASpendingTerminationsQuery(ContractQuery):
             )
 
     def search(
-        self, start_date: Optional[date] = None, end_date: Optional[date] = None
+        self, start_date: date | None = None, end_date: date | None = None
     ) -> pd.DataFrame:
         """Search for termination actions and close any client created here."""
         try:
@@ -792,7 +513,7 @@ class USASpendingTerminationsQuery(ContractQuery):
                 self.client = None
 
     def _search(
-        self, start_date: Optional[date] = None, end_date: Optional[date] = None
+        self, start_date: date | None = None, end_date: date | None = None
     ) -> pd.DataFrame:
         """
         Search NASA procurement terminations and premature grant clawbacks.
@@ -811,7 +532,7 @@ class USASpendingTerminationsQuery(ContractQuery):
         Returns a DataFrame in FINAL_COLUMNS format, one row per unique
         Award ID (most recent matching transaction wins the description).
         """
-        start = (start_date or date(2025, 1, 20)).isoformat()
+        start = (start_date or TRACKING_WINDOW_START_DATE).isoformat()
         end = (end_date or date.today()).isoformat()
         print(
             f"Querying USAspending transactions for NASA termination/clawback "
@@ -820,7 +541,7 @@ class USASpendingTerminationsQuery(ContractQuery):
             file=sys.stderr,
         )
 
-        all_rows: List[Transaction] = []
+        all_rows: list[Transaction] = []
         for kw in SEARCH_KEYWORDS:
             found = self._fetch_keyword(kw, start, end)
             print(f"  keyword '{kw}': {len(found)} transactions", file=sys.stderr)
@@ -842,7 +563,7 @@ class USASpendingTerminationsQuery(ContractQuery):
         # Deduplicate by Award ID across all three signals, keeping the most
         # recent transaction. The optional hit carries the award-level
         # denominator needed only for clawback output.
-        best: dict[str, tuple[Transaction, Optional[ClawbackHit]]] = {}
+        best: dict[str, tuple[Transaction, ClawbackHit | None]] = {}
         for row in all_rows:
             aid = (row.award_identifier or "").strip()
             desc = (row.raw.get("Transaction Description") or "").strip()
@@ -886,7 +607,7 @@ class USASpendingTerminationsQuery(ContractQuery):
                 continue
 
             gid = row.generated_unique_award_id or ""
-            action_date = row.action_date.isoformat() if row.action_date else ""
+            action_date = to_iso(row.action_date)
             if clawback_hit is not None:
                 fraction = f"{clawback_hit.fraction:.0%}"
                 amount = f"${clawback_hit.pre_clawback_total:,.0f}"
@@ -921,6 +642,22 @@ class USASpendingTerminationsQuery(ContractQuery):
                     else "",
                     "description": row.raw.get("Transaction Description") or "",
                     "agency": row.raw.get("Awarding Agency") or "NASA",
+                    "action_date": action_date,
+                    # The clawback pass infers a kill from money movement with
+                    # no termination text or action code behind it, so it is
+                    # gated on its effect as well as its action date. The
+                    # keyword and action-code passes saw the termination
+                    # itself.
+                    "detection_basis": "inference"
+                    if clawback_hit is not None
+                    else "evidence",
+                    "detection_method": OBLIGATION_CLAWBACK
+                    if clawback_hit is not None
+                    else (
+                        TERMINATION_ACTION_CODE
+                        if (row.action_type or "").upper() in ACTION_CODE_KINDS
+                        else TERMINATION_LANGUAGE
+                    ),
                 }
             )
 

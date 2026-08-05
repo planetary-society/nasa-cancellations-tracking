@@ -2,7 +2,6 @@
 
 import csv
 
-
 import build_master_ledger as bml
 import reverify_awards
 
@@ -12,7 +11,6 @@ COLS = [
     "Recipient",
     "Award ID",
     "Latest Modification Number",
-    "Latest Modification Date",
     "Start Date",
     "End Date",
     "Award Amount",

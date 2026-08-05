@@ -12,9 +12,11 @@ class FakeTxn:
         action_type="",
         award_description="",
         federal_action_obligation=None,
+        action_type_description="",
     ):
         self.action_date = action_date
         self.modification_number = modification_number
         self.action_type = action_type
+        self.action_type_description = action_type_description
         self.award_description = award_description
         self.federal_action_obligation = federal_action_obligation

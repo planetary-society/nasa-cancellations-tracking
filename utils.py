@@ -1,7 +1,10 @@
-import re
-from decimal import Decimal
+import csv
 import logging
-from typing import Set, Optional, Tuple
+import os
+import re
+import tempfile
+from decimal import Decimal
+
 from titlecase import titlecase
 
 # Configure logging
@@ -12,7 +15,7 @@ logging.basicConfig(
 # --- Configuration ---
 # Set of acronyms and initialisms to always keep uppercase.
 # This could be loaded from a config file or environment variables in a larger application.
-DEFAULT_KEEP_UPPERCASE: Set[str] = {
+DEFAULT_KEEP_UPPERCASE: set[str] = {
     # Common Business / Legal
     "LLC",
     "INC",
@@ -70,8 +73,8 @@ PAREN_UPPERCASE_MAX_LEN: int = 9  # Fewer than 10 characters
 
 
 def smart_sentence_case(
-    text: Optional[str],
-    keep_uppercase: Set[str] = DEFAULT_KEEP_UPPERCASE,
+    text: str | None,
+    keep_uppercase: set[str] = DEFAULT_KEEP_UPPERCASE,
     paren_max_len: int = PAREN_UPPERCASE_MAX_LEN,
 ) -> str:
     """
@@ -208,7 +211,28 @@ def contracts_titlecase(text):
     return titlecase(text, callback=custom_titlecase_callback)
 
 
-def parse_mod_number(contract_mod_str: Optional[str]) -> Tuple[str, int]:
+# Splits a modification number into digit/non-digit runs.
+_MOD_NUMBER_PARTS = re.compile(r"(\d+)")
+
+
+def natural_modification_key(value) -> tuple:
+    """Sort key ordering modification numbers naturally: "2" before "10".
+
+    Lexicographic order gets this wrong, and same-day mods are ordered by
+    modification number in two places that must agree - reverify_awards, which
+    decides whether activity followed a termination, and initial_end_dates,
+    which picks an award's earliest reported end date. Distinct from
+    parse_mod_number, which extracts a single int and so collapses "P2" and
+    "P0002"; this preserves every run and never loses the non-numeric parts.
+    """
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in _MOD_NUMBER_PARTS.split(str(value or ""))
+        if part
+    )
+
+
+def parse_mod_number(contract_mod_str: str | None) -> tuple[str, int]:
     """
     Parses a string potentially containing an award ID and a modification identifier.
 
@@ -318,12 +342,12 @@ GENERATED_AWARD_ID_RE = re.compile(
 )
 
 
-def is_generated_award_id(value: Optional[str]) -> bool:
+def is_generated_award_id(value: str | None) -> bool:
     """True when this looks like a USAspending generated id, not a PIID/FAIN."""
     return (value or "").strip().startswith(GENERATED_AWARD_ID_PREFIXES)
 
 
-def canonical_generated_award_id(value: Optional[str]) -> str:
+def canonical_generated_award_id(value: str | None) -> str:
     """Normalize legacy NASA assistance ids to USAspending's canonical form.
 
     Historical snapshots used NASA's subtier code ``8000`` as the final
@@ -337,7 +361,7 @@ def canonical_generated_award_id(value: Optional[str]) -> str:
     return text
 
 
-def canonical_usaspending_url(value: Optional[str]) -> str:
+def canonical_usaspending_url(value: str | None) -> str:
     """Canonicalize the generated award id embedded in a USAspending URL."""
     text = (value or "").strip()
     match = re.search(r"/award/([^/?#]+)", text)
@@ -347,7 +371,7 @@ def canonical_usaspending_url(value: Optional[str]) -> str:
     return f"{text[: match.start(1)]}{award_id}{text[match.end(1) :]}"
 
 
-def award_id_from_generated_id(value: Optional[str]) -> str:
+def award_id_from_generated_id(value: str | None) -> str:
     """Pull the PIID/FAIN out of a USAspending generated award id.
 
     USAspending's own award URLs carry a composite id -
@@ -382,6 +406,40 @@ def format_as_currency(amount: int) -> str:
     amount_decimal = Decimal(amount)
 
     # Format to two decimal places, with commas for thousands separator
-    formatted_string = "${:,.2f}".format(amount_decimal)
+    formatted_string = f"${amount_decimal:,.2f}"
 
     return formatted_string
+
+
+def write_sidecar_csv(path: str, fieldnames, rows: dict[str, dict]) -> None:
+    """Atomically rewrite a machine-owned sidecar in deterministic order.
+
+    Every sidecar in this repo is a full rewrite keyed by Award ID, and each
+    one is committed by CI, so a partially written file is a corrupt data
+    commit. The write-to-temp-then-os.replace contract lives here once rather
+    than being restated per sidecar, where a hardening of one copy (an fsync,
+    a leak fix) would silently not reach the others.
+    """
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            newline="",
+            encoding="utf-8",
+            dir=parent,
+            prefix="." + os.path.basename(path) + ".",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            tmp_path = fh.name
+            writer = csv.DictWriter(fh, fieldnames=list(fieldnames))
+            writer.writeheader()
+            for key in sorted(rows):
+                writer.writerow(rows[key])
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)

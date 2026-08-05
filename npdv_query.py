@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 
+import csv  # Import csv module
+import logging
+import os
+import re
+from datetime import datetime
+from typing import Any
+from urllib.parse import urlparse
+
 import pandas as pd
 import requests
-import logging
-import re
-import os
-import csv  # Import csv module
-from urllib.parse import urlparse
-from typing import List, Tuple, Dict, Any, Optional
-from datetime import datetime
+
+from contract_query import FINAL_COLUMNS, ContractQuery
+from detection_methods import DESCRIPTION_KEYWORD
+from termination_vocabulary import is_cause
+from tracking_window import to_iso
 from utils import parse_mod_number  # Import parse_mod_number function from utils.py
 
-from contract_query import ContractQuery, FINAL_COLUMNS
-from termination_vocabulary import is_cause
+# NPDV publishes dates as M/D/YYYY. Declared at the call site (rather than
+# inside tracking_window) so the set of forms admitted into the shared
+# action_date column stays visible in one function.
+_NPDV_DATE_FORMATS = ("%m/%d/%Y",)
 
 # --- Configuration ---
 logging.basicConfig(
@@ -42,6 +50,7 @@ class NPDVQuery(ContractQuery):
         "stop work",
         "terminated",
         "terminates",
+        "terminate-for-convenience",
         "effectuate",
     ]
     DEFAULT_CSV_URL_2025 = "https://raw.githubusercontent.com/planetary-society/nasa-contracts/master/data/nasa_awards_2025.csv"
@@ -54,10 +63,10 @@ class NPDVQuery(ContractQuery):
 
     def __init__(
         self,
-        csv_urls: Optional[List[str]] = None,
-        search_phrases: Optional[List[str]] = None,
+        csv_urls: list[str] | None = None,
+        search_phrases: list[str] | None = None,
         local_cache_dir: str = ".",
-        final_columns: List[str] = FINAL_COLUMNS,
+        final_columns: list[str] = FINAL_COLUMNS,
     ):
         """Initializes the query object."""
         super().__init__(final_columns=final_columns)
@@ -95,7 +104,7 @@ class NPDVQuery(ContractQuery):
             f"{self.__class__.__name__} initialized. URLs={self.csv_urls}, Phrases={self.search_phrases}"
         )
 
-    def _generate_local_filename(self, url: str) -> Optional[str]:
+    def _generate_local_filename(self, url: str) -> str | None:
         """Generates a safe filename from a URL. (Implementation unchanged)"""
         try:
             parsed_url = urlparse(url)
@@ -149,8 +158,7 @@ class NPDVQuery(ContractQuery):
                     exist_ok=True,
                 )
                 with open(filepath, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                    f.writelines(r.iter_content(chunk_size=8192))
             logging.info(f"Successfully downloaded file to {filepath}")
             return True
         except requests.exceptions.RequestException as e:
@@ -172,7 +180,7 @@ class NPDVQuery(ContractQuery):
 
     def _get_data_filepath(
         self, url: str, filepath: str, force_reload: bool = False
-    ) -> Optional[str]:
+    ) -> str | None:
         """Ensures the data file is available locally, downloading if needed."""
         if not filepath:
             logging.error("Local file path could not be determined.")
@@ -222,7 +230,7 @@ class NPDVQuery(ContractQuery):
 
         # Dictionary to hold the data for the latest modification found per Award ID
         # Structure: {award_id: (mod_num, row_dict)}
-        latest_rows: Dict[str, Tuple[int, Dict[str, str]]] = {}
+        latest_rows: dict[str, tuple[int, dict[str, str]]] = {}
         required_cols = [
             "Contract/Mod Number",
             "Description",
@@ -230,6 +238,15 @@ class NPDVQuery(ContractQuery):
             "Completion Date",
             "Contractor",
         ]
+        # "Award Date" - the mod's own action date, which fills the shared
+        # action_date column - is deliberately NOT in required_cols. This
+        # source reads whole fiscal-year files (FY2025 opens 2024-10-01), so
+        # the window gate genuinely needs it; but requiring it here would mean
+        # an upstream header rename suppresses ALL detection from that file,
+        # turning a missing gate input into a source outage. Rows without it
+        # are emitted with a blank action_date instead, which the ingest gate
+        # quarantines loudly and by award id - strictly more informative than
+        # dropping the file.
 
         # Process each CSV file in order (FY2025 first, then FY2026)
         # Later files with same/higher mod numbers will override earlier entries
@@ -310,7 +327,7 @@ class NPDVQuery(ContractQuery):
         )
 
         # 3. Second Pass: Filter the latest modifications based on the description
-        final_results_list: List[Dict[str, Any]] = []
+        final_results_list: list[dict[str, Any]] = []
         logging.info(
             f"Filtering {len(latest_rows)} latest modifications for termination phrases..."
         )
@@ -338,6 +355,14 @@ class NPDVQuery(ContractQuery):
                     )
                     # --- End Formatting ---
 
+                    # The action date of the winning mod, in the same ISO form
+                    # every other source reports. Blank when the source date is
+                    # missing or unparseable, which the ingest gate treats as
+                    # out-of-window rather than guessing.
+                    action_date = to_iso(
+                        row_dict.get("Award Date", ""), _NPDV_DATE_FORMATS
+                    )
+
                     output_row_data = {
                         "Award ID": award_id,  # Use the reliable parsed award_id
                         "source_type": source_type,
@@ -349,6 +374,12 @@ class NPDVQuery(ContractQuery):
                         "source_url": "",
                         "description": description,  # Use the description we filtered on
                         "agency": self.AGENCY_NAME,
+                        "action_date": action_date,
+                        # This source matches termination language in the mod's
+                        # own description - it observes the termination rather
+                        # than deducing it from award shape.
+                        "detection_basis": "evidence",
+                        "detection_method": DESCRIPTION_KEYWORD,
                     }
                     # Ensure only columns defined in self.final_columns are included
                     filtered_output_data = {

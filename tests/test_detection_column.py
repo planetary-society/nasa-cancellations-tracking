@@ -21,7 +21,6 @@ COLS = [
     "Recipient",
     "Award ID",
     "Latest Modification Number",
-    "Latest Modification Date",
     "Start Date",
     "End Date",
     "Award Amount",
@@ -195,8 +194,9 @@ def test_the_new_column_is_the_only_thing_that_changed(workdir):
     assert set(with_detection) == set(without_detection)
     for aid, rec in with_detection.items():
         other = without_detection[aid]
-        assert {k: v for k, v in rec.items() if k != "Detection"} == {
-            k: v for k, v in other.items() if k != "Detection"
+        detection_fields = {"Detection", "Primary Detection Method"}
+        assert {k: v for k, v in rec.items() if k not in detection_fields} == {
+            k: v for k, v in other.items() if k not in detection_fields
         }
     assert with_detection["A-1"]["Detection"] == CONVENIENCE
     assert without_detection["A-1"]["Detection"] == ""

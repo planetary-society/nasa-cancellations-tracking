@@ -26,19 +26,30 @@ pipeline as the recency net; this one is the depth net.
 
 Local-only by construction: the mirror lives on the operator's LAN and is
 unreachable from GitHub Actions. On CI (and on any machine without the DB
-credentials) search() replays the most recent committed export instead, which
-keeps validate_snapshot's source-presence check satisfied without pretending
-to have queried anything.
+credentials) search.py skips this optional source. Successful live queries are
+still exported for auditability, but an old export is never presented as a
+current database result.
 """
 
 import os
 import sys
-from typing import List, NamedTuple, Optional
+from collections.abc import Sequence
+from contextlib import contextmanager
+from datetime import date
+from typing import NamedTuple
 
 import pandas as pd
 from dotenv import load_dotenv
 
-from contract_query import ContractQuery, FINAL_COLUMNS, find_most_recent_csv
+import award_period_change_facts
+from award_period import SHORTENING_MIN_DAYS
+from contract_query import FINAL_COLUMNS, ContractQuery
+from detection_methods import primary_local_method
+from initial_end_dates import (
+    InitialEndDateResult,
+    InitialEndDateTarget,
+    select_initial_reported_end_date,
+)
 from termination_vocabulary import (
     CAUSE_TEXT,
     TERM_TEXT,
@@ -46,6 +57,7 @@ from termination_vocabulary import (
     is_reversal,
     is_vacatur,
 )
+from tracking_window import TRACKING_WINDOW_START, to_iso
 
 # The sibling API source is the home for the detection constants both sources
 # share - the action codes, their phrasing, and the clawback thresholds. They
@@ -72,14 +84,13 @@ COMPONENT_ENV_VARS = ("DB_USER", "DB_PASS", "DB_URI", "DB_PORT", "DB_NAME")
 
 EXPORT_BASE = "usaspending_database_direct_query"
 
-# The tracking window opens at the second-term inauguration. An action_date
-# bound is also what lets Postgres use the index on transaction_search; without
-# one, every net degrades into a seq scan over ~236M rows.
-TRACKING_WINDOW_START = "2025-01-20"
+# Keeps a sleeping or unplugged mirror host from hanging the run before any
+# statement_timeout gets a chance.
+CONNECT_TIMEOUT_S = 10
 
-# How far an end date must move back before the truncation net calls it a kill.
-# Measured, not chosen for roundness - see Q3's comment.
-TRUNCATION_MIN_DAYS = 180
+
+class LocalMirrorUnavailableError(RuntimeError):
+    """The optional local mirror could not be reached for this run."""
 
 
 def _pg_pattern(*regexes) -> str:
@@ -184,35 +195,48 @@ WHERE ts.awarding_agency_id = 862
 ORDER BY ts.action_date
 """
 
+# One process has one run date. Interpolating the Python clock (rather than
+# CURRENT_DATE from the mirror) keeps the query, sidecar validation, output
+# filename, and the orchestrator's idea of "today" on the same timezone.
+PERIOD_CHANGE_RUN_DATE = date.today().isoformat()
+
+# Natural enough for USAspending modification identifiers, whose observed
+# shapes contain a text prefix and one numeric run (P0002, P00010, 2, 10).
+# transaction_unique_id is still the final deterministic tie-breaker.
+_NATURAL_MOD_ORDER_SQL = """
+lower(regexp_replace(COALESCE(modification_number, ''), '[0-9]+', '', 'g')),
+NULLIF(regexp_replace(COALESCE(modification_number, ''), '[^0-9]', '', 'g'), '')::numeric NULLS FIRST,
+lower(COALESCE(modification_number, '')),
+transaction_id
+""".strip()
+_NATURAL_MOD_ORDER_DESC_SQL = """
+lower(regexp_replace(COALESCE(modification_number, ''), '[0-9]+', '', 'g')) DESC,
+NULLIF(regexp_replace(COALESCE(modification_number, ''), '[^0-9]', '', 'g'), '')::numeric DESC NULLS LAST,
+lower(COALESCE(modification_number, '')) DESC,
+transaction_id DESC
+""".strip()
+
 Q3_END_DATE_TRUNCATION = f"""
--- Period-of-performance end dates yanked backwards, FPDS + FABS. This net
--- needs no termination language at all, which is the point: a quietly
--- de-scoped award often reads as a routine administrative mod.
---
--- nasa_txn reaches back to 2007-10-01 because max_end_ever must be the
--- highest end date the award EVER carried, not the highest inside the
--- tracking window. Only the truncating mod itself has to be recent, which is
--- what the inner award_id subquery selects for.
---
--- Three gates, all measured on this mirror on 2026-07-30. The loose form of
--- this query (truncation > 30 days, no obligation test) flagged 414 awards,
--- 299 of them truncation-only, and only 108 survived the two extra gates:
---   * federal_action_obligation < 0 - a real kill takes money back; a pure
---     date change with no deobligation is almost always PoP realignment.
---   * max_end_ever - end_date >= {TRUNCATION_MIN_DAYS} - six months is the
---     floor where the signal stops being administrative noise.
--- The other ~200 were exactly that noise, and would have flooded the snapshot.
+-- Largest consecutive backwards period-of-performance change per award,
+-- FPDS + FABS. This is deliberately a historical event detector: a later
+-- continuation or extension does not erase a suspicious shortening action.
+-- Null end dates are removed before LAG, so a transaction that omits the field
+-- does not break the chain between the surrounding dated records.
 WITH nasa_txn AS (
   SELECT ts.award_id,
          COALESCE(ts.piid, ts.fain, ts.uri) AS award_id_native,
          ts.generated_unique_award_id,
+         ts.transaction_unique_id AS transaction_id,
          ts.is_fpds,
          ts.modification_number,
          ts.action_date,
          ts.transaction_description,
          ts.federal_action_obligation,
          ts.recipient_name,
-         ts.period_of_performance_current_end_date AS end_date
+         COALESCE(
+             NULLIF(TRIM(ts.ordering_period_end_date), '')::date,
+             ts.period_of_performance_current_end_date
+         ) AS end_date
   FROM rpt.transaction_search ts
   WHERE ts.awarding_agency_id = 862
     AND ts.action_date >= '2007-10-01'
@@ -220,44 +244,61 @@ WITH nasa_txn AS (
       SELECT t2.award_id
       FROM rpt.transaction_search t2
       WHERE t2.awarding_agency_id = 862
-        AND t2.action_date >= '{TRACKING_WINDOW_START}'
+        AND t2.action_date > '{TRACKING_WINDOW_START}'
     )
 ),
--- One pass: the window function computes each award's highest-ever end date
--- alongside the rows it is chosen from, so DISTINCT ON can pick the latest
--- mod from the same sort. Aggregating separately and joining back cost this
--- query - the only one that needs 600s - an extra sort and a hash join.
-latest AS (
-  SELECT DISTINCT ON (award_id)
-         *,
-         MAX(end_date) OVER (PARTITION BY award_id) AS max_end_ever
+dated AS (
+  SELECT *,
+         LAG(end_date) OVER (
+           PARTITION BY award_id
+           ORDER BY action_date, {_NATURAL_MOD_ORDER_SQL}
+         ) AS previous_end_date
   FROM nasa_txn
   WHERE end_date IS NOT NULL
-  ORDER BY award_id, action_date DESC, modification_number DESC
+),
+candidates AS (
+  SELECT *,
+         previous_end_date - end_date AS days_truncated
+  FROM dated
+  WHERE previous_end_date IS NOT NULL
+    -- Strict action boundary: inauguration day itself does not qualify for
+    -- this heuristic, per the method decision recorded on 2026-08-02.
+    AND action_date > '{TRACKING_WINDOW_START}'
+    -- The shortened-to date must describe an effect within the policy window
+    -- that has happened by this run, not a future re-baseline.
+    AND end_date BETWEEN '{TRACKING_WINDOW_START}' AND '{PERIOD_CHANGE_RUN_DATE}'
+    AND previous_end_date - end_date > {SHORTENING_MIN_DAYS}
+    -- Zero-dollar administrative changes are informative here; positive
+    -- funding actions are not suspicious shortening events.
+    AND federal_action_obligation <= 0
+),
+largest AS (
+  SELECT *,
+         ROW_NUMBER() OVER (
+           PARTITION BY award_id
+           ORDER BY days_truncated DESC,
+                    action_date DESC,
+                    {_NATURAL_MOD_ORDER_DESC_SQL}
+         ) AS shortening_rank
+  FROM candidates
 )
 SELECT award_id_native,
        generated_unique_award_id,
+       transaction_id,
        is_fpds,
        modification_number,
        action_date,
        transaction_description,
        federal_action_obligation,
        recipient_name,
-       (max_end_ever - end_date) AS days_truncated,
+       previous_end_date,
+       end_date,
+       days_truncated,
        'end_date_truncation' AS detection_method
-FROM latest
-WHERE action_date >= '{TRACKING_WINDOW_START}'
-  AND max_end_ever - end_date >= {TRUNCATION_MIN_DAYS}
-  AND federal_action_obligation < 0
-  -- The new end must land near the mod that set it, otherwise this is an
-  -- award whose end date was always in the past, not one just cut short.
-  AND end_date - action_date BETWEEN -365 AND 60
+FROM largest
+WHERE shortening_rank = 1
 ORDER BY days_truncated DESC
 """
-
-# TODO: Implement the Initial Reported End Date provider against
-# rpt.transaction_search and prefer it over public download jobs when mirror
-# access is restored, preserving the same selection and provenance contract.
 
 Q4_PURE_CLAWBACKS = f"""
 -- Grants killed by money removal alone: no termination language, no date
@@ -298,28 +339,89 @@ ORDER BY ts.action_date
 """
 
 
+# Initial Reported End Date provider. See initial_end_dates for why the public
+# API cannot supply this column and the download path that used to was removed.
+#
+# Reaches back to 2007-10-01 rather than the tracking window on purpose: the
+# whole point is the end date the award STARTED with, which for a long-running
+# award predates the window by years.
+#
+# That makes the award-id predicate load-bearing in a way it is not for the
+# four detection nets. Every other query in this module gets its index access
+# from `action_date >= TRACKING_WINDOW_START`; this one has no such bound, so
+# if the award filter is not sargable nothing keeps Postgres off a scan of the
+# 236M-row table. Hence generated_unique_award_id rather than
+# COALESCE(piid, fain, uri): a bare equality on one stored column, versus an
+# expression no index can serve. Every target reaching this query has a
+# generated id by construction - search.py only sends targets whose category is
+# non-empty, and initial_end_date_category derives category from that id's
+# prefix.
+#
+# No ORDER BY: select_initial_reported_end_date re-sorts in Python, and its
+# natural mod-number order ('2' before '10') differs from SQL's text order
+# anyway, so sorting here would be a Sort node whose result is discarded.
+INITIAL_END_DATE_START = "2007-10-01"
+INITIAL_END_DATE_TIMEOUT_S = 600
+
+INITIAL_END_DATE_SQL = f"""
+SELECT ts.generated_unique_award_id,
+       ts.transaction_unique_id AS transaction_id,
+       ts.action_date,
+       ts.modification_number,
+       -- An IDV reports an ordering-period boundary rather than a period of
+       -- performance; the same preference _award_end_date applies to enriched
+       -- awards in search.py. Applied to every row: ordering_period_end_date is
+       -- an FPDS IDV field and null elsewhere, so the COALESCE is a no-op for
+       -- non-IDVs.
+       --
+       -- NOT `last_date_to_order`: that is the API's DISPLAY name for this
+       -- value (search.py reads it off award.raw) and exists in no table. The
+       -- column is `ordering_period_end_date`, and in transaction_search it is
+       -- TEXT while period_of_performance_current_end_date is DATE - so both
+       -- arms are rendered as text rather than cast here, because COALESCE
+       -- cannot match the two types and select_initial_reported_end_date
+       -- already normalises whatever text arrives (this module is transport;
+       -- initial_end_dates owns the parsing and its failure policy).
+       COALESCE(
+           NULLIF(TRIM(ts.ordering_period_end_date), ''),
+           ts.period_of_performance_current_end_date::text
+       ) AS end_date
+FROM rpt.transaction_search ts
+WHERE ts.awarding_agency_id = 862
+  AND ts.action_date >= '{INITIAL_END_DATE_START}'
+  AND ts.generated_unique_award_id = ANY(%(generated_award_ids)s)
+"""
+
+
 class Net(NamedTuple):
-    """One detection net: its label in `detection_method`, its timeout, its SQL.
+    """One detection net: its label in `detection_method`, timeout, SQL, basis.
 
     The timeouts are measured on this mirror. Fail-loud means failing, not
     hanging: an unresponsive mirror must abort the run rather than block the
     daily job forever.
+
+    `basis` is the net's answer to contract_query.DETECTION_BASES - whether it
+    saw a termination or deduced one. It is a required field so a new net
+    cannot be registered without classifying it; the tracking-window effect
+    gate depends on that answer.
     """
 
     name: str
     timeout_s: int
     sql: str
+    basis: str
 
 
 # Order matters twice: it is the order the nets run in, and the order their
 # phrases appear in an award's `status`.
 NETS = (
-    Net("action_code", 300, Q1_ACTION_CODES),
-    Net("description_regex", 300, Q2_DESCRIPTION_REGEX),
-    Net("end_date_truncation", 600, Q3_END_DATE_TRUNCATION),
-    Net("clawback", 300, Q4_PURE_CLAWBACKS),
+    Net("action_code", 300, Q1_ACTION_CODES, "evidence"),
+    Net("description_regex", 300, Q2_DESCRIPTION_REGEX, "evidence"),
+    Net("end_date_truncation", 600, Q3_END_DATE_TRUNCATION, "inference"),
+    Net("clawback", 300, Q4_PURE_CLAWBACKS, "inference"),
 )
-_NET_RANK = {net.name: rank for rank, net in enumerate(NETS)}
+_NETS_BY_NAME = {net.name: net for net in NETS}
+_NET_ORDER = {net.name: rank for rank, net in enumerate(NETS)}
 
 
 def _is_fpds(val) -> bool:
@@ -344,6 +446,24 @@ def _action_date_key(row: dict) -> str:
     return str(row.get("action_date") or "")
 
 
+def _detection_basis(award_rows) -> str:
+    """ "evidence" if any net saw a real termination action, else "inference".
+
+    Strongest claim wins: an award found by both a truncation and a real
+    termination action has evidence behind it, so the effect gate must not
+    apply and evict a genuine cancellation. See
+    contract_query.DETECTION_BASES.
+    """
+    return (
+        "evidence"
+        if any(
+            _NETS_BY_NAME[row["detection_method"]].basis == "evidence"
+            for row in award_rows
+        )
+        else "inference"
+    )
+
+
 def _status_phrase(row: dict) -> str:
     """One human-readable sentence describing why this net flagged this row."""
     method = row.get("detection_method")
@@ -358,7 +478,12 @@ def _status_phrase(row: dict) -> str:
         return f"Termination-language transaction {mod} on {when}"
     if method == "end_date_truncation":
         days = row.get("days_truncated")
-        return f"End date truncated {days} days by mod {mod} on {when}"
+        previous = to_iso(row.get("previous_end_date"))
+        resulting = to_iso(row.get("end_date"))
+        return (
+            f"End date shortened {days} days from {previous} to {resulting} "
+            f"by mod {mod} on {when}"
+        )
     if method == "clawback":
         pct = round(float(row.get("clawback_fraction") or 0) * 100)
         amount = abs(float(row.get("federal_action_obligation") or 0))
@@ -410,10 +535,10 @@ def _combine(rows) -> pd.DataFrame:
 
         gid = latest.get("generated_unique_award_id") or ""
 
-        phrases: List[str] = []
+        phrases: list[str] = []
         ordered = sorted(
             award_rows,
-            key=lambda r: _NET_RANK.get(r.get("detection_method"), len(NETS)),
+            key=lambda r: _NET_ORDER.get(r.get("detection_method"), len(NETS)),
         )
         for row in ordered:
             phrase = _status_phrase(row)
@@ -438,6 +563,15 @@ def _combine(rows) -> pd.DataFrame:
                 "description": latest.get("transaction_description") or "",
                 "agency": "NASA",
                 "claim_date": None,
+                "action_date": to_iso(latest.get("action_date")),
+                # An award this source flagged through more than one net is
+                # judged on its strongest claim: if ANY net saw real
+                # termination evidence, the award is evidence-based and the
+                # effect gate does not apply. Only a purely inferred award -
+                # truncation and/or clawback with nothing else - carries
+                # "inference" and must show its effect inside the window.
+                "detection_basis": _detection_basis(award_rows),
+                "detection_method": primary_local_method(award_rows),
             }
         )
 
@@ -488,16 +622,17 @@ class LocalUSASpendingMirrorQuery(ContractQuery):
         )
         return f"postgresql://{user}:{password}@{host}:{port}/{name}"
 
-    @classmethod
-    def is_available(cls) -> bool:
-        """True when the source can produce a result: live DB or prior export.
+    def _require_configured(self) -> None:
+        """Raise the narrow availability error when no credentials are set.
 
-        search.py drops unavailable sources, so this is what keeps CI from
-        aborting the run over a database it can never reach.
+        Historical exports are evidence from earlier runs, not a substitute
+        for a current query, so their presence never satisfies this.
         """
-        if cls.is_configured():
-            return True
-        return find_most_recent_csv("data", EXPORT_BASE) is not None
+        if not self.is_configured():
+            raise LocalMirrorUnavailableError(
+                f"no database credentials ({DSN_ENV_VAR} or "
+                f"{'/'.join(COMPONENT_ENV_VARS)})"
+            )
 
     @staticmethod
     def _run(cur, net: Net):
@@ -512,24 +647,56 @@ class LocalUSASpendingMirrorQuery(ContractQuery):
         cur.execute(net.sql)
         return cur.fetchall()
 
-    def _query_mirror(self) -> pd.DataFrame:
-        """Run every net against the live mirror and combine them."""
-        # Imported here, not at module scope, so replay mode and the test suite
-        # never need the driver installed.
+    @contextmanager
+    def _cursor(self):
+        """Yield a dict cursor on the mirror, or raise LocalMirrorUnavailableError.
+
+        Both callers - the detection nets and the initial-end-date provider -
+        need the same connection policy, so it is written once here.
+
+        connect_timeout keeps a sleeping or unplugged mirror host from hanging
+        the run before statement_timeout ever gets a chance. Connectivity,
+        authentication, a dropped connection, and server timeouts all make this
+        optional LAN-only source unavailable for the run. SQL/programming
+        errors remain fail-loud: treating those as an offline database would
+        hide a broken query.
+        """
+        # Imported here, not at module scope, so processes that skip this
+        # optional source never need the driver installed.
         import psycopg
         from psycopg.rows import dict_row
 
+        try:
+            with (
+                psycopg.connect(self._dsn(), connect_timeout=CONNECT_TIMEOUT_S) as conn,
+                conn.cursor(row_factory=dict_row) as cur,
+            ):
+                yield cur
+        except psycopg.OperationalError as exc:
+            raise LocalMirrorUnavailableError(
+                "local USAspending database is not accessible"
+            ) from exc
+
+    def _query_mirror(self) -> pd.DataFrame:
+        """Run every net against the live mirror and combine them."""
         print(
             f"Querying local USAspending mirror for NASA cancellations "
             f"since {TRACKING_WINDOW_START}",
             file=sys.stderr,
         )
 
-        # connect_timeout keeps a sleeping or unplugged mirror host from
-        # hanging the run before statement_timeout ever gets a chance.
-        with psycopg.connect(self._dsn(), connect_timeout=10) as conn:
-            with conn.cursor(row_factory=dict_row) as cur:
-                results = {net.name: self._run(cur, net) for net in NETS}
+        with self._cursor() as cur:
+            results = {net.name: self._run(cur, net) for net in NETS}
+
+        # Stored on the instance until search() has successfully combined all
+        # nets. A caller of _query_mirror() is diagnostic/read-only; only the
+        # public search() method replaces the committed facts sidecar.
+        self.period_change_fact_rows = {
+            row["award_id_native"]: award_period_change_facts.build_fact_row(
+                row, checked=PERIOD_CHANGE_RUN_DATE
+            )
+            for row in results["end_date_truncation"]
+        }
 
         rows = []
         for net in NETS:
@@ -551,33 +718,78 @@ class LocalUSASpendingMirrorQuery(ContractQuery):
         print(f"LocalUSASpendingMirror: {len(df)} unique awards", file=sys.stderr)
         return df
 
-    def search(self, **kwargs) -> pd.DataFrame:
-        """Query the mirror, or replay the last export when it is unreachable.
+    def fetch_initial_reported_end_dates(
+        self, targets: Sequence[InitialEndDateTarget]
+    ) -> list[InitialEndDateResult]:
+        """Resolve each target's originally-reported period-of-performance end.
 
-        The export IS the search result - _combine's output written verbatim -
-        so replay reproduces the last live run exactly rather than
-        approximating it. That is what lets a DB-less runner still satisfy
-        validate_snapshot's source-presence check.
+        One query for every target. See initial_end_dates for why this is the
+        only provider.
+
+        Raises LocalMirrorUnavailableError when the mirror cannot be reached,
+        which the caller treats as "resolve none this run" - the stored
+        provenance file is write-once and committed, so nothing is lost, the
+        backlog is simply picked up on the next run with mirror access.
         """
-        if self.is_configured():
-            df = self._query_mirror()
-            self.export_to_csv(df, EXPORT_BASE)
-            return df
+        if not targets:
+            return []
+        self._require_configured()
 
-        latest: Optional[str] = find_most_recent_csv("data", EXPORT_BASE)
-        if latest:
-            print(
-                f"LocalUSASpendingMirror: replaying {latest} (DB not configured)",
-                file=sys.stderr,
-            )
-            return pd.read_csv(latest, dtype=str, keep_default_na=False)
-
-        raise RuntimeError(
-            f"LocalUSASpendingMirror has neither database credentials "
-            f"({DSN_ENV_VAR} or {'/'.join(COMPONENT_ENV_VARS)}) nor a prior "
-            f"data/{EXPORT_BASE}_*.csv to replay; cannot distinguish "
-            f"'no cancellations' from 'source unavailable'."
+        by_gid = {target.generated_award_id: target for target in targets}
+        print(
+            f"Resolving {len(by_gid)} initial reported end date(s) from the "
+            f"local USAspending mirror",
+            file=sys.stderr,
         )
+
+        with self._cursor() as cur:
+            cur.execute(f"SET statement_timeout = '{INITIAL_END_DATE_TIMEOUT_S}s'")
+            try:
+                cur.execute(INITIAL_END_DATE_SQL, {"generated_award_ids": list(by_gid)})
+            except Exception as exc:
+                # transaction_unique_id and ordering_period_end_date are the
+                # only two columns this module uses that no detection net
+                # proves exist. Fail loudly and name them rather than degrade:
+                # this feeds a write-once provenance file, so a silently-
+                # substituted column would be recorded as `resolved` and never
+                # revisited.
+                raise RuntimeError(
+                    f"initial-end-date query failed against "
+                    f"rpt.transaction_search ({exc}). It needs "
+                    f"generated_unique_award_id, transaction_unique_id, "
+                    f"ordering_period_end_date and "
+                    f"period_of_performance_current_end_date."
+                ) from exc
+            rows = cur.fetchall()
+
+        grouped: dict[str, list[dict]] = {gid: [] for gid in by_gid}
+        for row in rows:
+            grouped[row["generated_unique_award_id"]].append(row)
+
+        return [
+            select_initial_reported_end_date(target, grouped[gid])
+            if grouped[gid]
+            # The mirror lags the live API by 2-6 weeks, so a just-flagged
+            # award can be genuinely absent. Non-terminal, so the caller does
+            # not persist it; one missing award must not abort the others.
+            else InitialEndDateResult.unresolved(target, "not_in_mirror")
+            for gid, target in by_gid.items()
+        ]
+
+    def search(self, **kwargs) -> pd.DataFrame:
+        """Query the live mirror and export the successful result.
+
+        The orchestrator normally removes this source before calling search()
+        when credentials are absent. Raising the same typed availability error
+        here keeps direct callers safe and gives the orchestrator one narrow
+        exception to skip without weakening its fail-loud policy elsewhere.
+        """
+        self._require_configured()
+
+        df = self._query_mirror()
+        award_period_change_facts.write_facts(self.period_change_fact_rows)
+        self.export_to_csv(df, EXPORT_BASE)
+        return df
 
 
 if __name__ == "__main__":

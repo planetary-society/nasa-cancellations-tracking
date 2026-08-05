@@ -29,7 +29,11 @@ Assigned by classify():
                       termination for cause, or an award terminated before the
                       2025-01-20 tracking window. Note that rows from the
                       reverted 2026-01-08 grants experiment are dropped at
-                      ingest instead, so they never reach the ledger at all.
+                      ingest instead, so they never reach the ledger at all -
+                      as are, since 2026-07-31, all pre-window actions
+                      (tracking_window.py). This status now covers only the
+                      awards admitted before that gate existed; nothing new
+                      should arrive here for a window reason.
     dropped_pending_review - disappeared for an unverified reason; requires
                       manual or API verification (see verification/)
 
@@ -52,7 +56,10 @@ import re
 from collections import Counter
 from datetime import date
 
+import award_transaction_facts
+import initial_end_dates
 from contract_query import load_snapshot
+from detection_methods import DETECTION_METHODS, infer_snapshot_method
 from termination_vocabulary import is_cause, is_reversal, is_vacatur
 from utils import canonical_usaspending_url
 
@@ -67,9 +74,7 @@ VERIFICATION_PATH = os.path.join("verification", "dropped_award_status.csv")
 AUTO_VERIFICATION_PATH = os.path.join("verification", "auto_verification.csv")
 
 # Machine-written, write-once transaction provenance for original end dates.
-INITIAL_END_DATES_PATH = os.path.join(
-    "verification", "initial_reported_end_dates.csv"
-)
+INITIAL_END_DATES_PATH = os.path.join("verification", "initial_reported_end_dates.csv")
 INITIAL_END_DATE_COLUMNS = [
     "Award ID",
     "Generated Award ID",
@@ -82,11 +87,10 @@ INITIAL_END_DATE_COLUMNS = [
     "Lookup Status",
     "Last Checked Date",
 ]
-INITIAL_END_DATE_STATUSES = {
-    "resolved",
-    "no_reported_end_date",
-    "unsupported_award_id",
-}
+# Imported, not restated: the producers live in initial_end_dates and the
+# mirror provider, so a status added there must not be able to pass this
+# validator by accident or fail it by omission.
+INITIAL_END_DATE_STATUSES = initial_end_dates.INITIAL_END_DATE_STATUSES
 
 # Auto verdicts allowed to set a ledger Status, and then only at high
 # confidence. Everything else is recorded in the Auto Status column only.
@@ -138,6 +142,14 @@ FPDS_LAST_GOOD_DATE = "2026-02-24"  # last snapshot before ezsearch retirement
 EXPERIMENT_DATE = "2026-01-08"
 EXPERIMENT_SOURCE = "NASAGrants"
 
+# The transaction-derived provenance group: what the award's own USAspending
+# transaction history says was done to it, and when. Declared once and splatted
+# into every list that carries it - snapshot order, ledger order, and the
+# refreshed set - because three hand-maintained copies of the same ten names
+# drift, and a name present in two of the three is silently dropped at the
+# snapshot-to-ledger boundary.
+TRANSACTION_HISTORY_COLUMNS = award_transaction_facts.TRANSACTION_HISTORY_COLUMNS
+
 LEDGER_COLUMNS = [
     "Award ID",
     "Recipient",
@@ -147,14 +159,22 @@ LEDGER_COLUMNS = [
     "Last Seen",
     "Status",
     "Status Detail",
+    # Paired with Latest Action Date below, which is that modification's
+    # action_date. There was once a separate Latest Modification Date column
+    # sourced from award.period_of_performance.last_modified_date; it was
+    # dropped in favour of this pairing because USAspending defines that field
+    # as when the award *record* was last updated, not when its latest
+    # transaction occurred. The two routinely diverged by months, so the column
+    # read as a transaction date while carrying a database timestamp.
     "Latest Modification Number",
-    "Latest Modification Date",
+    *TRANSACTION_HISTORY_COLUMNS,
     "Start Date",
     "End Date",
     "Initial Reported End Date",
     "Award Amount",
     "Total Outlays",
     "Description",
+    "Primary Detection Method",
     "Detection",
     "Business Categories",
     "URL",
@@ -203,8 +223,8 @@ STICKY_COLUMNS = (
 REVISABLE_COLUMNS = ("Claimed Status", "Claimed Savings", "Claim Date")
 
 # Fields refreshed from the newest observation of an award. A blank value never
-# clobbers a populated one (the USAspending API stopped returning
-# Latest Modification Date on 2026-04-08).
+# clobbers a populated one, so a field the API drops for a while keeps its last
+# known value rather than being erased.
 #
 # Detection is refreshed rather than write-once: it describes the award's most
 # recent detected action, so a later mod supersedes the earlier evidence. Every
@@ -214,12 +234,13 @@ REFRESHED_COLUMNS = (
     "Recipient",
     "District",
     "Latest Modification Number",
-    "Latest Modification Date",
+    *TRANSACTION_HISTORY_COLUMNS,
     "Start Date",
     "End Date",
     "Award Amount",
     "Total Outlays",
     "Description",
+    "Primary Detection Method",
     "Detection",
     "Business Categories",
     "URL",
@@ -491,7 +512,9 @@ def load_initial_end_dates():
         for row in reader:
             aid = (row.get("Award ID") or "").strip()
             if not aid:
-                raise RuntimeError(f"{INITIAL_END_DATES_PATH} contains a blank Award ID")
+                raise RuntimeError(
+                    f"{INITIAL_END_DATES_PATH} contains a blank Award ID"
+                )
             if aid in rows:
                 raise RuntimeError(
                     f"{INITIAL_END_DATES_PATH} contains duplicate Award ID {aid!r}"
@@ -626,6 +649,11 @@ def build(update_only=False):
             if is_reverted_experiment(date_str, row):
                 ignored_experiment += 1
                 continue
+            # Snapshots written before this column existed still need a
+            # structured method in the all-history ledger. Infer only what the
+            # archived Source/Detection fields support; legacy Local Mirror
+            # rows remain explicitly legacy rather than gaining false detail.
+            row["Primary Detection Method"] = infer_snapshot_method(row)
             d = row.get("Description", "")
             if d:
                 # dict-as-ordered-set: a full rebuild walks ~400 snapshots, and
@@ -669,9 +697,12 @@ def build(update_only=False):
 
     auto = load_auto_verification()
     initial_end_dates = load_initial_end_dates()
+    transaction_facts = award_transaction_facts.load_facts()
     overrides = load_verification(ledger)
 
     for aid, rec in ledger.items():
+        if not rec.get("Primary Detection Method"):
+            rec["Primary Detection Method"] = infer_snapshot_method(rec)
         # Every award carries its machine read, including listed ones - that
         # is how a false positive still in the daily snapshot becomes visible.
         rec["Auto Status"] = auto.get(aid, {}).get("Auto Status", "")
@@ -686,6 +717,14 @@ def build(update_only=False):
             rec["Initial Reported End Date"] = initial_end_dates.get(aid, {}).get(
                 "Initial Reported End Date", ""
             )
+        # Transaction facts are independent of daily snapshot acceptance. A
+        # successful complete-history lookup is authoritative for this group,
+        # including legitimate blanks where USAspending supplies no action
+        # code or the history contains no formal termination/closeout.
+        facts = transaction_facts.get(aid)
+        if facts:
+            for column in award_transaction_facts.LEDGER_OVERLAY_COLUMNS:
+                rec[column] = facts.get(column, "")
 
         if aid in latest:
             rec["Status"], rec["Status Detail"] = "listed", ""
@@ -708,6 +747,18 @@ def build(update_only=False):
     rows = sorted(
         ledger.values(), key=lambda r: (r["Recipient"].lower(), r["Award ID"])
     )
+    bad_methods = sorted(
+        {
+            rec.get("Primary Detection Method", "")
+            for rec in rows
+            if rec.get("Primary Detection Method", "") not in DETECTION_METHODS
+        }
+    )
+    if bad_methods:
+        raise RuntimeError(
+            "Master ledger contains invalid Primary Detection Method value(s): "
+            + ", ".join(repr(method) for method in bad_methods)
+        )
     with open(LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS)
         w.writeheader()

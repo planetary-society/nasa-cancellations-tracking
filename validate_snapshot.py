@@ -33,10 +33,23 @@ from contract_query import load_snapshot
 MAX_ROW_DROP = 3  # max net rows lost vs. previous snapshot before quarantine
 DISAPPEARANCE_LOG = os.path.join("verification", "disappearance_log.csv")
 QUARANTINE_DIR = os.path.join("consolidated", "quarantine")
+REVIEWED_REMOVALS_PATH = os.path.join("verification", "dropped_award_status.csv")
 
 
 def _source_counts(rows):
     return Counter(r.get("Source", "?") for r in rows.values())
+
+
+def load_reviewed_removals(path=REVIEWED_REMOVALS_PATH):
+    """Awards a human explicitly approved for methodology removal."""
+    if not os.path.exists(path):
+        return set()
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        return {
+            row["Award ID"]
+            for row in csv.DictReader(fh)
+            if row.get("Award ID") and row.get("Status") == "excluded_by_design"
+        }
 
 
 def log_disappearances(new_rows, old_rows, run_date):
@@ -74,8 +87,25 @@ def log_disappearances(new_rows, old_rows, run_date):
     return gone
 
 
-def validate(new_csv_path, previous_csv_path):
+def validate(
+    new_csv_path,
+    previous_csv_path,
+    *,
+    skipped_sources=(),
+    reviewed_removals=None,
+):
     """Validate a candidate snapshot against the previous accepted one.
+
+    ``skipped_sources`` names explicitly optional sources that were unavailable
+    before collection began (or raised their narrow availability exception).
+    Their old rows are excluded from presence, shrinkage, and disappearance
+    checks; all other sources retain the normal fail-loud guarantees.
+
+    ``reviewed_removals`` is the narrow methodology escape hatch: only awards
+    a human marked ``excluded_by_design`` are removed from the comparison
+    baseline. Other human statuses and machine verdicts cannot suppress the
+    guard. Passing a set is useful for tests; production loads the human-owned
+    verification file.
 
     Returns (ok: bool, messages: list[str]). On failure the candidate file is
     moved to consolidated/quarantine/ and must not be committed.
@@ -86,7 +116,28 @@ def validate(new_csv_path, previous_csv_path):
         return True, ["No previous snapshot; accepting first snapshot as baseline."]
 
     new_rows, old_rows = load_snapshot(new_csv_path), load_snapshot(previous_csv_path)
-    new_counts, old_counts = _source_counts(new_rows), _source_counts(old_rows)
+    skipped_sources = set(skipped_sources)
+    reviewed_removals = (
+        load_reviewed_removals()
+        if reviewed_removals is None
+        else set(reviewed_removals)
+    )
+    # Every check below compares against the previous snapshot minus the rows a
+    # skipped source owned, so the exclusion is applied once, here, rather than
+    # re-stated as a guard inside each check.
+    comparable_old_rows = {
+        aid: row
+        for aid, row in old_rows.items()
+        if row.get("Source") not in skipped_sources and aid not in reviewed_removals
+    }
+    reviewed_present = sorted(set(old_rows) & reviewed_removals - set(new_rows))
+    if reviewed_present:
+        messages.append(
+            f"NOTE: {len(reviewed_present)} reviewed excluded_by_design removal(s) "
+            f"omitted from snapshot comparison: {', '.join(reviewed_present)}"
+        )
+    new_counts = _source_counts(new_rows)
+    old_counts = _source_counts(comparable_old_rows)
 
     ok = True
 
@@ -101,12 +152,13 @@ def validate(new_csv_path, previous_csv_path):
             )
 
     # 2. Shrinkage guard.
-    drop = len(old_rows) - len(new_rows)
+    drop = len(comparable_old_rows) - len(new_rows)
     if drop > MAX_ROW_DROP:
         ok = False
         messages.append(
             f"FAIL shrinkage: snapshot lost {drop} net rows "
-            f"({len(old_rows)} -> {len(new_rows)}); limit is {MAX_ROW_DROP}. "
+            f"({len(comparable_old_rows)} comparable -> {len(new_rows)}); "
+            f"limit is {MAX_ROW_DROP}. "
             f"Mass disappearances are almost always a source/methodology "
             f"failure, not real-world change."
         )
@@ -115,7 +167,7 @@ def validate(new_csv_path, previous_csv_path):
     #    a single dropped award is legal but must leave a trail).
     if ok:
         gone = log_disappearances(
-            new_rows, old_rows, datetime.now().strftime("%Y-%m-%d")
+            new_rows, comparable_old_rows, datetime.now().strftime("%Y-%m-%d")
         )
         if gone:
             messages.append(

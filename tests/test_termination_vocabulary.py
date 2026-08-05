@@ -117,6 +117,7 @@ def test_is_vacatur_known_overmatch():
 
 TERM_YES = [
     "Terminate for convenience",
+    "terminate-for-convenience",
     "termination for convenience of the government",
     "terminated for convenience",
     "T4C executed",

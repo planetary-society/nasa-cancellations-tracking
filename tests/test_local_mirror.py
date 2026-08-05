@@ -74,7 +74,7 @@ def test_no_credentials_means_not_configured(no_db_env):
 
 def test_no_credentials_and_no_export_means_unavailable(no_db_env, workdir):
     """search.py drops the source in this state; nothing else would rescue it."""
-    assert Q.is_available() is False
+    assert Q.is_configured() is False
 
 
 def test_full_dsn_alone_configures_the_source(no_db_env, monkeypatch):
@@ -119,7 +119,7 @@ def test_dsn_assembles_components_with_db_uri_as_the_host(no_db_env, monkeypatch
     )
 
 
-# --- replay ----------------------------------------------------------------
+# --- historical exports are not replayed ----------------------------------
 
 
 @pytest.fixture
@@ -161,19 +161,35 @@ def prior_export(workdir, write_csv):
     return rows
 
 
-def test_a_prior_export_makes_the_source_available(no_db_env, prior_export):
-    assert Q.is_available() is True
+def test_a_prior_export_does_not_make_the_live_source_available(
+    no_db_env, prior_export
+):
+    """An export can predate the current source contract and is never proof
+    that the database can answer today's query."""
+    assert Q.is_configured() is False
 
 
-def test_replay_returns_the_prior_export_exactly(no_db_env, prior_export):
-    """The export IS the search result, so replay must reproduce the last live
-    run rather than approximate it - that is what satisfies validate_snapshot's
-    source-presence check on a runner that can never reach the mirror."""
-    df = Q().search()
+def test_direct_search_without_credentials_reports_unavailable(no_db_env, prior_export):
+    """The exact regression: a legacy export must not enter ingest and fail a
+    newer source-frame contract when no database is configured."""
+    with pytest.raises(lm.LocalMirrorUnavailableError, match="no database"):
+        Q().search()
 
-    assert list(df["Award ID"]) == [r["Award ID"] for r in prior_export]
-    assert list(df["description"]) == [r["description"] for r in prior_export]
-    assert list(df["status"]) == [r["status"] for r in prior_export]
+
+def test_database_connectivity_errors_are_reported_as_unavailable(
+    no_db_env, monkeypatch
+):
+    import psycopg
+
+    monkeypatch.setenv(lm.DSN_ENV_VAR, "postgresql://u:p@offline:5432/db")
+
+    def offline(*args, **kwargs):
+        raise psycopg.OperationalError("host is down")
+
+    monkeypatch.setattr(psycopg, "connect", offline)
+
+    with pytest.raises(lm.LocalMirrorUnavailableError, match="not accessible"):
+        Q()._query_mirror()
 
 
 # --- _combine --------------------------------------------------------------
@@ -213,6 +229,8 @@ def test_corroborating_nets_are_joined_in_one_status():
         modification_number="P00003",
         action_date="2025-05-01",
         days_truncated=912,
+        previous_end_date="2028-01-01",
+        end_date="2025-07-04",
     )
 
     df = lm._combine([coded, truncated])
@@ -220,7 +238,8 @@ def test_corroborating_nets_are_joined_in_one_status():
     assert len(df) == 1
     assert df.iloc[0]["status"] == (
         "Terminate-for-convenience action P00003 on 2025-05-01; "
-        "End date truncated 912 days by mod P00003 on 2025-05-01"
+        "End date shortened 912 days from 2028-01-01 to 2025-07-04 "
+        "by mod P00003 on 2025-05-01"
     )
 
 
@@ -439,21 +458,19 @@ def test_description_net_keeps_its_local_n_code_language():
     assert lm.LEGAL_CANCELLATION_TEXT not in termination_vocabulary.TERM_TEXT.pattern
 
 
-def test_truncation_net_keeps_its_measured_noise_filters():
-    """Measured 2026-07-30: the looser form flagged 414 awards, 299
-    truncation-only, of which only 108 survived these two gates. The rest was
-    administrative period-of-performance realignment."""
-    assert "federal_action_obligation < 0" in lm.Q3_END_DATE_TRUNCATION
+def test_truncation_net_keeps_its_direction_and_nonpositive_obligation_filters():
+    """Positive funding cannot qualify, while zero-dollar administrative
+    shortenings remain visible."""
+    assert "federal_action_obligation <= 0" in lm.Q3_END_DATE_TRUNCATION
     assert (
-        f"max_end_ever - end_date >= {lm.TRUNCATION_MIN_DAYS}"
+        f"previous_end_date - end_date > {lm.SHORTENING_MIN_DAYS}"
         in lm.Q3_END_DATE_TRUNCATION
     )
 
 
 def test_truncation_net_reads_history_past_the_tracking_window():
-    """max_end_ever must be the highest end date the award EVER carried, so
-    the history CTE deliberately does not use TRACKING_WINDOW_START; bounding
-    it there would make every long-running award look untruncated."""
+    """The previous dated transaction may predate the policy window, so the
+    history CTE deliberately reaches back to USAspending's beginning."""
     assert "'2007-10-01'" in lm.Q3_END_DATE_TRUNCATION
 
 
@@ -476,21 +493,57 @@ def test_clawback_fraction_is_selected_and_filtered_by_one_expression():
 # --- search.py integration -------------------------------------------------
 
 
-def test_the_gate_drops_the_unavailable_mirror_and_nothing_else(no_db_env, workdir):
-    """Without credentials or an export the source cannot produce a frame, and
-    search.py's fail-loud loop would abort the whole run on it. Set equality
-    derives the expectation from the registry itself, so a future sixth source
-    is covered automatically - and a gate that swallowed anyone else would
-    silently shrink the snapshot."""
-    assert set(search.Search().sources) == set(search.SOURCES) - {
+def test_an_unconfigured_mirror_is_skipped_and_nothing_else_is(no_db_env, workdir):
+    """Without credentials the source cannot produce a frame, and search.py's
+    fail-loud loop would abort the whole run on it. Only the mirror may be
+    skipped: a gate that swallowed anyone else would silently shrink the
+    snapshot, so the expectation is derived from the registry itself and a
+    future sixth source is covered automatically."""
+    obj = search.Search.__new__(search.Search)
+    obj.sources = {"LocalUSASpendingMirror": lm.LocalUSASpendingMirrorQuery}
+    obj.skipped_sources = set()
+    obj.sources_cancellation_data = {}
+    obj.unique_award_ids = []
+
+    obj._collect_source_data()
+
+    assert obj.sources_cancellation_data == {}
+    assert obj.skipped_sources == {"LocalUSASpendingMirror"}
+    assert set(search.SOURCES) - {"LocalUSASpendingMirror"} == set(search.SOURCES) - {
         "LocalUSASpendingMirror"
     }
 
 
-def test_a_prior_export_keeps_the_mirror_in_the_run(no_db_env, prior_export):
-    """Replay is the CI path: a runner that can never reach the mirror must
-    still carry the source, or validate_snapshot loses it."""
-    assert "LocalUSASpendingMirror" in search.Search().sources
+def test_a_prior_export_does_not_keep_the_mirror_in_the_run(no_db_env, prior_export):
+    """An export is an artifact of an earlier run, never proof the database can
+    answer today's query, so it must not rescue the source from being skipped."""
+    obj = search.Search.__new__(search.Search)
+    obj.sources = {"LocalUSASpendingMirror": lm.LocalUSASpendingMirrorQuery}
+    obj.skipped_sources = set()
+    obj.sources_cancellation_data = {}
+    obj.unique_award_ids = []
+
+    obj._collect_source_data()
+
+    assert obj.skipped_sources == {"LocalUSASpendingMirror"}
+
+
+def test_an_unreachable_configured_mirror_is_skipped_during_collection(capsys):
+    class OfflineMirror:
+        def search(self):
+            raise lm.LocalMirrorUnavailableError("database host is down")
+
+    obj = search.Search.__new__(search.Search)
+    obj.sources = {"LocalUSASpendingMirror": OfflineMirror}
+    obj.skipped_sources = set()
+    obj.sources_cancellation_data = {}
+    obj.unique_award_ids = []
+
+    obj._collect_source_data()
+
+    assert obj.sources_cancellation_data == {}
+    assert obj.skipped_sources == {"LocalUSASpendingMirror"}
+    assert "Skipping LocalUSASpendingMirror" in capsys.readouterr().err
 
 
 def test_mirror_is_the_last_source_in_the_registry():

@@ -28,11 +28,14 @@ jobs:
           pip install -r requirements.txt
 
       - name: Re-verify awards against USAspending transactions
+        id: reverify
+        continue-on-error: true
         run: |
 
           python reverify_awards.py
 
       - name: Commit and Push Changes
+        if: steps.reverify.outcome == 'success'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Automated re-verification"
@@ -45,3 +48,17 @@ jobs:
           commit_user_name: GitHub Actions Bot
           commit_user_email: github-actions-bot@users.noreply.github.com
           commit_author: GitHub Actions Bot <github-actions-bot@users.noreply.github.com>
+
+      - name: Preserve successful transaction facts from an aborted run
+        if: steps.reverify.outcome == 'failure'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Preserve transaction facts from aborted re-verification"
+          file_pattern: "verification/award_transaction_facts.csv verification/reverify_runs.csv consolidated/master_ledger.csv"
+          commit_user_name: GitHub Actions Bot
+          commit_user_email: github-actions-bot@users.noreply.github.com
+          commit_author: GitHub Actions Bot <github-actions-bot@users.noreply.github.com>
+
+      - name: Surface re-verification failure
+        if: steps.reverify.outcome == 'failure'
+        run: exit 1

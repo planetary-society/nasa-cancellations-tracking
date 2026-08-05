@@ -1,28 +1,41 @@
-import pandas as pd
-from datetime import datetime
-from typing import List, Dict
 import csv
+import logging
 import os
 import shutil
 import sys
 import tempfile
-import logging
+from datetime import datetime
+
+import pandas as pd
+from usaspending import Award, USASpendingClient
+from usaspending.exceptions import USASpendingError
+
+import award_period_change_facts
+import award_transaction_facts as transaction_facts
+import build_master_ledger
+from contract_query import csv_files_equal, find_most_recent_csv, validate_source_frame
 from doge_search import DOGEQuery
-from npdv_query import NPDVQuery
-from nasa_grants_query import NASAGrantsQuery
-from usaspending_terminations_query import (
+from initial_end_dates import (
+    TRANSIENT_STATUSES,
     InitialEndDateResult,
     InitialEndDateTarget,
-    USASpendingTerminationsQuery,
-    fetch_initial_reported_end_dates,
     initial_end_date_category,
 )
-from local_usaspending_mirror_query import LocalUSASpendingMirrorQuery
-from usaspending import USASpendingClient, Award
-from contract_query import find_most_recent_csv, csv_files_equal
-from utils import canonical_usaspending_url, is_generated_award_id
+from local_usaspending_mirror_query import (
+    LocalMirrorUnavailableError,
+    LocalUSASpendingMirrorQuery,
+)
+from nasa_grants_query import NASAGrantsQuery
+from npdv_query import NPDVQuery
+from tracking_window import TRACKING_WINDOW_START, in_window
+from usaspending_terminations_query import USASpendingTerminationsQuery
+from utils import (
+    canonical_generated_award_id,
+    canonical_usaspending_url,
+    is_generated_award_id,
+    write_sidecar_csv,
+)
 from validate_snapshot import validate
-import build_master_ledger
 
 # Configure logging
 logging.basicConfig(
@@ -75,13 +88,16 @@ SNAPSHOT_COLUMNS = [
     "Recipient",
     "Award ID",
     "Latest Modification Number",
-    "Latest Modification Date",
+    *build_master_ledger.TRANSACTION_HISTORY_COLUMNS,
     "Start Date",
     "End Date",
     "Initial Reported End Date",
     "Award Amount",
     "Total Outlays",
     "Description",
+    # Structured counterpart to Detection: the primary signal that caused the
+    # winning source to include this award.
+    "Primary Detection Method",
     # Why the winning source flagged this award, in its own words. Each query
     # module already composes one ("Terminate-for-convenience action P00180 on
     # 2026-05-06"); until this column existed it was dropped here, so the
@@ -122,6 +138,14 @@ def _award_end_date(award: Award) -> str:
     return end_date or ""
 
 
+def _history_key(award: Award) -> str:
+    """Cache key for one award's transaction history and derived facts."""
+    generated_id = str(getattr(award, "generated_unique_award_id", "") or "")
+    return canonical_generated_award_id(generated_id) or str(
+        getattr(award, "award_identifier", "") or ""
+    )
+
+
 def _generated_id_from_url(value: str) -> str:
     marker = "/award/"
     if marker not in (value or ""):
@@ -144,34 +168,13 @@ def _initial_end_date_row(result: InitialEndDateResult, checked: str) -> dict:
     }
 
 
-def _write_initial_end_dates(rows: Dict[str, dict]) -> None:
+def _write_initial_end_dates(rows: dict[str, dict]) -> None:
     """Atomically replace the machine-owned Initial End Date sidecar."""
-    path = build_master_ledger.INITIAL_END_DATES_PATH
-    parent = os.path.dirname(path)
-    os.makedirs(parent, exist_ok=True)
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            newline="",
-            encoding="utf-8",
-            dir=parent,
-            prefix=".initial-end-dates-",
-            suffix=".csv",
-            delete=False,
-        ) as fh:
-            tmp_path = fh.name
-            writer = csv.DictWriter(
-                fh, fieldnames=build_master_ledger.INITIAL_END_DATE_COLUMNS
-            )
-            writer.writeheader()
-            for aid in sorted(rows):
-                writer.writerow(rows[aid])
-        os.replace(tmp_path, path)
-        tmp_path = None
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    write_sidecar_csv(
+        build_master_ledger.INITIAL_END_DATES_PATH,
+        build_master_ledger.INITIAL_END_DATE_COLUMNS,
+        rows,
+    )
 
 
 class Search:
@@ -185,39 +188,43 @@ class Search:
 
     def __init__(self):
         self.client = USASpendingClient()
-        # Copy so the availability gate below cannot mutate the module constant.
         self.sources = dict(SOURCES)
-        # The one exception to the fail-loud policy: an unavailable mirror has
-        # nothing to query and nothing to replay, so drop it before the loop
-        # can abort on it. Every other source stays fail-loud - and the hard
-        # del keeps this gate loud too if the registry key is ever renamed.
-        if not LocalUSASpendingMirrorQuery.is_available():
-            del self.sources["LocalUSASpendingMirror"]
-            print(
-                "Skipping LocalUSASpendingMirror: no DB credentials and no "
-                "prior export to replay.",
-                file=sys.stderr,
-            )
-        self.sources_cancellation_data: Dict[
+        # Populated by _collect_source_data, which is the single place a source
+        # is skipped: an unconfigured or unreachable mirror raises the narrow
+        # LocalMirrorUnavailableError from search() and is recorded there. A
+        # second gate here produced the same end state by a second mechanism.
+        self.skipped_sources: set[str] = set()
+        self.sources_cancellation_data: dict[
             str, pd.DataFrame
         ] = {}  # key: source name, value: source dataframe
-        self.unique_award_ids: List[str] = []
-        self.unique_cancellations: Dict[
-            str, Dict
+        self.unique_award_ids: list[str] = []
+        self.unique_cancellations: dict[
+            str, dict
         ] = {}  # key: award_id, value: snapshot row keyed by column name
-        self.awards: List[Award] = []
-        self.awards_by_id: Dict[
+        self.awards: list[Award] = []
+        self.awards_by_id: dict[
             str, Award
         ] = {}  # keyed by the id the SOURCE used, which may be a generated id
-        self.claims: Dict[
-            str, Dict[str, str]
+        self.claims: dict[
+            str, dict[str, str]
         ] = {}  # key: award_id, value: claim fields
-        self.unresolved: Dict[
-            str, List[str]
+        self.unresolved: dict[
+            str, list[str]
         ] = {}  # key: award_id, value: sources that flagged it
-        self.initial_end_date_rows: Dict[str, dict] = {}
+        self.initial_end_date_rows: dict[str, dict] = {}
         self.initial_end_dates_changed = False
-        self.ignore_award_ids: List[str] = [
+        # Complete award transaction histories, loaded lazily and at most once
+        # per generated award id.  Several source rows can resolve to the same
+        # award, and both the tracking-window gate and snapshot enrichment need
+        # the history; neither is allowed to issue its own duplicate lookup.
+        self.transaction_histories: dict[str, list] = {}
+        self.history_facts: dict[str, object] = {}
+        self.transaction_facts_changed = False
+        # Rows the tracking window kept out, with the reason for each. Reported
+        # at the end of every run: an exclusion the operator cannot see is
+        # indistinguishable from a source quietly breaking.
+        self.window_rejects: list[dict[str, str]] = []
+        self.ignore_award_ids: list[str] = [
             "80LARC19F0086",
             "80LARC25F7014",
             "80JSC024F0024",
@@ -242,30 +249,8 @@ class Search:
         3. Enrich with USAspending.gov details
         4. Export consolidated CSV to consolidated/ directory
         """
-        # Query all sources and collect both their returned dataframes and a list of unique award ids
-        # FAIL-LOUD POLICY: a source that errors or returns zero rows aborts
-        # the run. Every silent data loss in the 2025-2026 audit traced back
-        # to a source failing open (empty frame == "no cancellations").
-        for source, query_class in self.sources.items():
-            try:
-                df = query_class().search()
-            except Exception as e:
-                raise RuntimeError(
-                    f"Source '{source}' failed: {e}. Aborting run - a missing "
-                    f"source would silently shrink the consolidated snapshot."
-                ) from e
-            if df.empty:
-                raise RuntimeError(
-                    f"Source '{source}' returned zero rows. Historically every "
-                    f"source has had nonzero results; treating empty as a "
-                    f"fetch failure (see 2026-02-25 FPDS retirement and the "
-                    f"recurring NPDV outages). Aborting run."
-                )
-            self.sources_cancellation_data[source] = df
-            award_ids = df["Award ID"].astype(str).tolist()
-            for award_id in award_ids:
-                if award_id not in self.unique_award_ids:
-                    self.unique_award_ids.append(award_id)
+        self._collect_source_data()
+        self._filter_nasa_grant_period_changes()
 
         self._build_claim_index()
 
@@ -287,7 +272,7 @@ class Search:
 
         print(f"Found {len(self.awards)} awards from USASpending API.")
 
-        for source in self.sources:
+        for source in self.sources_cancellation_data:
             # Get the source award IDs from the source dataframe
             source_award_ids = (
                 self.sources_cancellation_data[source]["Award ID"].astype(str).tolist()
@@ -295,12 +280,16 @@ class Search:
             # Add the source awards to the cancellations dictionary
             self._add_source_awards(source, source_award_ids)
 
+        # Persist successful complete-history facts independently of whether
+        # the candidate snapshot below is accepted or quarantined.
+        self._enrich_transaction_facts()
+
         print(f"Found {len(self.unique_cancellations)} unique cancellations.")
 
         output_data = list(self.unique_cancellations.values())
 
         df = pd.DataFrame(output_data, columns=SNAPSHOT_COLUMNS)
-        df.sort_values(by=["Recipient", "Latest Modification Date"], inplace=True)
+        df.sort_values(by=["Recipient", "Latest Action Date"], inplace=True)
 
         # Make output directory if it doesn't exist
         os.makedirs("consolidated", exist_ok=True)
@@ -325,12 +314,13 @@ class Search:
             )
             if most_recent and csv_files_equal(tmp_path, most_recent):
                 print(f"No changes from prior file, skipping export to {csv_filename}")
-                if self.initial_end_dates_changed:
+                if self.initial_end_dates_changed or self.transaction_facts_changed:
                     # A historical-only award can gain its first transaction
-                    # baseline without changing the current daily snapshot.
+                    # provenance without changing the current daily snapshot.
                     build_master_ledger.build()
                 # Still report: an unresolved source id is a standing problem
                 # whether or not today's snapshot moved.
+                self._report_window_rejects()
                 self._report_review_queue()
                 return
 
@@ -346,10 +336,20 @@ class Search:
         # Validate the new snapshot against the previous accepted one.
         # On failure the snapshot is quarantined and the run exits nonzero
         # so the GitHub Action surfaces it instead of committing bad data.
-        ok, messages = validate(csv_filename, most_recent)
+        ok, messages = validate(
+            csv_filename,
+            most_recent,
+            skipped_sources=getattr(self, "skipped_sources", ()),
+        )
         for msg in messages:
             print(msg)
         if not ok:
+            # The candidate remains quarantined, but successful enrichment is
+            # independent metadata. Rebuild strictly from accepted snapshots
+            # and the sidecars so membership/status cannot leak across the
+            # validation boundary.
+            if self.initial_end_dates_changed or self.transaction_facts_changed:
+                build_master_ledger.build()
             raise SystemExit(1)
 
         # Merge the accepted snapshot into the append-only master ledger:
@@ -363,7 +363,305 @@ class Search:
         # against a run that spends minutes on API calls.
         build_master_ledger.build()
 
+        self._report_window_rejects()
         self._report_review_queue()
+
+    def _collect_source_data(self) -> None:
+        """Query sources, skipping only an unavailable local mirror."""
+        # Query all sources and collect both their returned dataframes and a
+        # list of unique award ids.
+        # FAIL-LOUD POLICY: a source that errors or returns zero rows aborts
+        # the run. Every silent data loss in the 2025-2026 audit traced back
+        # to a source failing open (empty frame == "no cancellations").
+        for source, query_class in self.sources.items():
+            try:
+                df = query_class().search()
+            except LocalMirrorUnavailableError as e:
+                if source != "LocalUSASpendingMirror":
+                    raise RuntimeError(
+                        f"Source '{source}' incorrectly reported a local-mirror "
+                        f"availability error: {e}"
+                    ) from e
+                self.skipped_sources.add(source)
+                print(f"Skipping {source}: {e}.", file=sys.stderr)
+                continue
+            except Exception as e:
+                raise RuntimeError(
+                    f"Source '{source}' failed: {e}. Aborting run - a missing "
+                    f"source would silently shrink the consolidated snapshot."
+                ) from e
+            if df.empty:
+                raise RuntimeError(
+                    f"Source '{source}' returned zero rows. Historically every "
+                    f"source has had nonzero results; treating empty as a "
+                    f"fetch failure (see 2026-02-25 FPDS retirement and the "
+                    f"recurring NPDV outages). Aborting run."
+                )
+            df = self._enforce_declared_window(source, df)
+            self.sources_cancellation_data[source] = df
+            award_ids = df["Award ID"].astype(str).tolist()
+            for award_id in award_ids:
+                if award_id not in self.unique_award_ids:
+                    self.unique_award_ids.append(award_id)
+
+    def _filter_nasa_grant_period_changes(self) -> None:
+        """Require a persisted mirror transaction fact for NASA Grants rows.
+
+        The NASA Grants API labels these rows with a workflow task containing
+        both ``Decrease`` and ``Change Pop End Date``. That label does not say
+        which transaction changed the date, what the prior date was, or even
+        that the date (rather than another administrative field) decreased.
+        Only the persisted result of the mirror's complete transaction walk is
+        strong enough to admit the row. A temporarily unavailable mirror leaves
+        prior successful facts intact; an unconfirmed new label is retried on a
+        later run rather than guessed into the snapshot.
+        """
+        source = "NASAGrants"
+        frame = self.sources_cancellation_data.get(source)
+        if frame is None or frame.empty:
+            return
+
+        facts = award_period_change_facts.load_facts()
+        keep_indices = []
+        rejected: list[str] = []
+        for index, row in frame.iterrows():
+            award_id = _cell(row, "Award ID")
+            fact = facts.get(award_id)
+            if fact is None:
+                rejected.append(award_id)
+                continue
+            keep_indices.append(index)
+            # Replace the ambiguous NASA workflow prose with the exact
+            # transaction-level fact that confirmed it, including the actual
+            # action date used by the downstream tracking-window gate.
+            frame.at[index, "status"] = award_period_change_facts.detection_text(fact)
+            frame.at[index, "action_date"] = fact["Action Date"]
+            frame.at[index, "detection_basis"] = "inference"
+
+        self.sources_cancellation_data[source] = frame.loc[keep_indices].copy()
+
+        # These candidates were needed for enrichment so the comparison could
+        # be made, but after rejection they are no longer current source awards
+        # unless another source independently detected them.
+        remaining_ids = {
+            str(award_id)
+            for source_frame in self.sources_cancellation_data.values()
+            for award_id in source_frame["Award ID"].dropna().tolist()
+            if str(award_id)
+        }
+        self.unique_award_ids = [
+            award_id for award_id in self.unique_award_ids if award_id in remaining_ids
+        ]
+
+        if rejected:
+            print(
+                f"{source}: excluded {len(rejected)} unconfirmed period-change "
+                f"candidate(s); no qualifying mirror transaction fact:",
+                file=sys.stderr,
+            )
+            for award_id in rejected:
+                print(f"  {award_id}", file=sys.stderr)
+
+    def _reject(self, source: str, award_id: str, reason: str) -> None:
+        """Record one row the tracking window kept out, for the end-of-run report."""
+        self.window_rejects.append(
+            {"Award ID": award_id, "Source": source, "Reason": reason}
+        )
+
+    def _enforce_declared_window(self, source: str, df: pd.DataFrame) -> pd.DataFrame:
+        """Drop rows whose source-declared action date predates the window.
+
+        First of the two ingest gates. It runs before enrichment, on the
+        source's own declaration, so a pre-window row never even costs an API
+        lookup. The second gate (_passes_tracking_window) runs after
+        enrichment, where the award's real transaction history is available.
+
+        A blank declaration is NOT dropped here: it means the source could not
+        observe an action date, not that the action is out of window. The
+        second gate derives a real date from USAspending and re-gates, so
+        dropping blanks here would delete such a source's entire contribution
+        before the derivation ever ran.
+        """
+        validate_source_frame(source, df)
+
+        # Blanks pass this gate undecided; only a date that is present AND
+        # pre-window is rejected here.
+        keep = df["action_date"].map(
+            lambda v: pd.isna(v) or not str(v).strip() or in_window(v)
+        )
+        for _, row in df[~keep].iterrows():
+            self._reject(
+                source,
+                _cell(row, "Award ID"),
+                f"action date {_cell(row, 'action_date')} precedes tracking "
+                f"window start {TRACKING_WINDOW_START}",
+            )
+        return df[keep]
+
+    def _ledger_awards(self) -> list[tuple[str, str]]:
+        """(award id, generated award id) for every award in the stored ledger.
+
+        Both sidecars backfill ledger-only awards using the same extraction, so
+        it lives here rather than being restated per sidecar, and the file is
+        parsed once per run instead of once per caller. Returns [] when no
+        ledger exists yet, which is the first-run case.
+        """
+        cache = getattr(self, "_ledger_award_ids", None)
+        if cache is None:
+            cache = []
+            if os.path.exists(build_master_ledger.LEDGER_PATH):
+                with open(build_master_ledger.LEDGER_PATH, encoding="utf-8") as fh:
+                    for row in csv.DictReader(fh):
+                        aid = (row.get("Award ID") or "").strip()
+                        if aid:
+                            cache.append(
+                                (aid, _generated_id_from_url(row.get("URL") or ""))
+                            )
+            self._ledger_award_ids = cache
+        return cache
+
+    def _cache(self, name: str) -> dict:
+        """Return a named per-run memo dict, creating it on first use.
+
+        Some unit tests construct Search without calling __init__, so every
+        cache attribute has to tolerate not existing yet. Doing that in one
+        place keeps the three memoised lookups below to their actual logic.
+        """
+        cache = getattr(self, name, None)
+        if cache is None:
+            cache = {}
+            setattr(self, name, cache)
+        return cache
+
+    def _transaction_history(self, award: Award) -> list:
+        """Fetch and cache one award's complete transaction history.
+
+        This is one ORM query walk, which can span more than one HTTP page for
+        unusually large awards.  The returned list is the sole input for the
+        first/latest action fields, formal termination/closeout provenance,
+        and the derived tracking-window action date.
+        """
+        cache = self._cache("transaction_histories")
+        key = _history_key(award)
+        if key not in cache:
+            query = award.transactions
+            if hasattr(query, "order_by"):
+                cache[key] = transaction_facts.fetch_transaction_query(query)
+            else:
+                # Test doubles and callers may already hold a materialized
+                # history.  Copy it into the same cache rather than imposing
+                # the ORM interface on an already-complete list.
+                cache[key] = list(query)
+        return cache[key]
+
+    def _transaction_history_by_generated_id(self, generated_award_id: str) -> list:
+        """Fetch a ledger-only award while sharing the per-run history cache."""
+        cache = self._cache("transaction_histories")
+        key = canonical_generated_award_id(generated_award_id)
+        if not key:
+            raise ValueError("missing generated award id")
+        if key not in cache:
+            cache[key] = transaction_facts.fetch_transactions(self.client, key)
+        return cache[key]
+
+    def _history_facts(self, award: Award):
+        """The transaction-derived facts for one award, computed once.
+
+        A pure function of the history and the action-code vocabulary, so an
+        award revisited by a second source re-uses the first source's result
+        instead of re-sorting and re-scanning the whole history.
+        """
+        cache = self._cache("history_facts")
+        award_key = _history_key(award)
+        if award_key not in cache:
+            cache[award_key] = transaction_facts.transaction_history_facts(
+                self._transaction_history(award),
+                is_contract=transaction_facts.uses_contract_action_codes(
+                    getattr(award, "generated_unique_award_id", ""),
+                    award.category,
+                ),
+            )
+        return cache[award_key]
+
+    def _passes_tracking_window(self, source: str, award_id: str, award, row) -> bool:
+        """Second ingest gate: does this award belong in the window at all?
+
+        Runs after USAspending enrichment, which is what makes it a genuine
+        backstop rather than a restatement of what the source already claimed:
+
+        1. The action date is the source's declaration when it made one, and
+           otherwise is DERIVED from the award's latest USAspending
+           transaction. An award whose most recent federal action predates the
+           window had nothing done to it inside the window, whatever a source
+           believes.
+
+        2. For an `inference` detection, the EFFECT must land in the window
+           too - see contract_query.DETECTION_BASES for what that means and
+           README "The Tracking Window" for the case that motivated it.
+        """
+        declared = _cell(row, "action_date")
+        if declared:
+            effective, origin = declared, "declared"
+        else:
+            # Only this branch needs the history, so an award the source dated
+            # itself is gated without paying for a transaction walk it may be
+            # about to discard.
+            latest = self._history_facts(award).latest
+            effective = transaction_facts.transaction_value(latest, "action_date")
+            origin = "derived from latest USAspending transaction"
+
+        if not in_window(effective):
+            self._reject(
+                source,
+                award_id,
+                f"action date {effective or '(none)'} ({origin}) precedes "
+                f"tracking window start {TRACKING_WINDOW_START}",
+            )
+            return False
+
+        # The basis vocabulary is validated per source in _enforce_declared_window,
+        # so by here it can only be one of DETECTION_BASES.
+        if _cell(row, "detection_basis") == "inference":
+            end_date = _award_end_date(award)
+            if not in_window(end_date):
+                self._reject(
+                    source,
+                    award_id,
+                    f"inferred cancellation, but period of performance ends "
+                    f"{end_date or '(none)'}, before tracking window start "
+                    f"{TRACKING_WINDOW_START}; the action on {effective} is "
+                    f"closeout of an earlier decision",
+                )
+                return False
+
+        return True
+
+    def _report_window_rejects(self):
+        """Print every row the tracking window kept out, and why.
+
+        Rejections are reported, never silent. A gate that quietly shrinks the
+        snapshot is indistinguishable from a source breaking - which is the
+        same failure mode the fail-loud policy above exists to prevent.
+
+        Awards that a later source went on to claim on its own evidence are
+        labelled rather than dropped from the report: the exclusion really
+        happened, but reporting it unqualified would say an award is missing
+        from the snapshot when it is in fact present.
+        """
+        if not self.window_rejects:
+            return
+        print(
+            f"\nTracking window ({TRACKING_WINDOW_START}) excluded "
+            f"{len(self.window_rejects)} row(s):"
+        )
+        for reject in self.window_rejects:
+            aid = reject["Award ID"]
+            admitted = (
+                " (admitted via another source)"
+                if aid in self.unique_cancellations
+                else ""
+            )
+            print(f"  {aid} [{reject['Source']}] - {reject['Reason']}{admitted}")
 
     def _fetch_awards(self):
         """Fetch every award category emitted by the configured sources."""
@@ -384,23 +682,18 @@ class Search:
     def _enrich_initial_reported_end_dates(self):
         """Backfill ledger awards and enrich every resolved current award."""
         existing = build_master_ledger.load_initial_end_dates()
-        targets: Dict[str, InitialEndDateTarget] = {}
+        targets: dict[str, InitialEndDateTarget] = {}
 
-        if os.path.exists(build_master_ledger.LEDGER_PATH):
-            with open(build_master_ledger.LEDGER_PATH, encoding="utf-8") as fh:
-                for row in csv.DictReader(fh):
-                    aid = (row.get("Award ID") or "").strip()
-                    gid = _generated_id_from_url(row.get("URL") or "")
-                    if not aid or aid in existing:
-                        continue
-                    category = initial_end_date_category(gid)
-                    lookup_id = "" if is_generated_award_id(aid) else aid
-                    targets[aid] = InitialEndDateTarget(
-                        aid, gid, category, lookup_id
-                    )
+        for aid, gid in self._ledger_awards():
+            if aid in existing:
+                continue
+            targets[aid] = InitialEndDateTarget(
+                aid, gid, initial_end_date_category(gid)
+            )
 
-        # Current award objects supply authoritative native ids and therefore
-        # replace any less-complete target recovered from the stored ledger.
+        # Current award objects carry the authoritative generated id and
+        # therefore replace any less-complete target recovered from the stored
+        # ledger, whose URL may not have been canonicalised.
         for aid in self.unique_award_ids:
             if aid in existing:
                 continue
@@ -409,40 +702,60 @@ class Search:
                 continue
             gid = str(getattr(award, "generated_unique_award_id", "") or "")
             targets[aid] = InitialEndDateTarget(
-                aid,
-                gid,
-                initial_end_date_category(gid),
-                str(getattr(award, "award_identifier", "") or ""),
+                aid, gid, initial_end_date_category(gid)
             )
 
         today = datetime.now().date().isoformat()
         fetchable = []
         new_results = []
         for target in targets.values():
-            if target.category and target.native_award_id:
+            if target.generated_award_id and target.category:
                 fetchable.append(target)
             else:
+                # No usable generated id yet - typically a ledger row whose URL
+                # has not been canonicalised. Transient, not a verdict on the
+                # award, so it is retried rather than recorded (see
+                # TRANSIENT_STATUSES).
                 new_results.append(
-                    InitialEndDateResult(
-                        target.award_id,
-                        target.generated_award_id,
-                        target.category,
-                        "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "unsupported_award_id",
-                    )
+                    InitialEndDateResult.unresolved(target, "unsupported_award_id")
                 )
 
-        if fetchable:
-            new_results.extend(
-                fetch_initial_reported_end_dates(self.client, fetchable, end_date=today)
+        # Mirror-only, by design - see initial_end_dates. Skipped without
+        # dialling when the run has already established the mirror is
+        # unavailable; the except is the narrow guard for a host that dies
+        # between the source query and here.
+        if fetchable and "LocalUSASpendingMirror" not in self.skipped_sources:
+            try:
+                new_results.extend(
+                    LocalUSASpendingMirrorQuery().fetch_initial_reported_end_dates(
+                        fetchable
+                    )
+                )
+            except LocalMirrorUnavailableError as exc:
+                print(
+                    f"Skipping Initial Reported End Date enrichment for "
+                    f"{len(fetchable)} award(s): {exc}. Values already recorded "
+                    f"in {build_master_ledger.INITIAL_END_DATES_PATH} are "
+                    f"unaffected.",
+                    file=sys.stderr,
+                )
+
+        transient = [r for r in new_results if r.status in TRANSIENT_STATUSES]
+        if transient:
+            print(
+                f"{len(transient)} award(s) left unresolved this run "
+                f"(transient); retrying next run.",
+                file=sys.stderr,
             )
 
         merged = dict(existing)
         for result in new_results:
+            # A transient status describes this RUN, not the award. The sidecar
+            # is write-once and this method skips anything already in it, so
+            # persisting one would retire the award from lookup forever over a
+            # condition that resolves itself.
+            if result.status in TRANSIENT_STATUSES:
+                continue
             # Existing terminal results are never replaced automatically. A
             # deliberate removal from the sidecar is the refresh mechanism.
             if result.award_id not in merged:
@@ -452,6 +765,79 @@ class Search:
         if self.initial_end_dates_changed:
             _write_initial_end_dates(merged)
         self.initial_end_date_rows = merged
+
+    def _enrich_transaction_facts(self) -> None:
+        """Persist current histories and backfill missing ledger-only awards.
+
+        This sidecar is deliberately written before snapshot validation.  It
+        contains only facts from complete successful transaction lookups, so a
+        candidate may be quarantined without discarding useful enrichment or
+        changing which awards belong to the authoritative snapshot.
+        """
+        existing = transaction_facts.load_facts()
+        merged = dict(existing)
+        checked = datetime.now().date().isoformat()
+        attempted: set[str] = set()
+        unresolved: list[tuple[str, str]] = []
+
+        # Current source awards refresh daily.  Several source ids may resolve
+        # to one generated award id; _transaction_history caches by that id so
+        # each complete history is still fetched at most once per run.
+        for aid in self.unique_award_ids:
+            award = self.awards_by_id.get(aid)
+            if award is None:
+                continue
+            attempted.add(aid)
+            generated_id = canonical_generated_award_id(
+                str(getattr(award, "generated_unique_award_id", "") or "")
+            )
+            try:
+                merged[aid] = transaction_facts.build_fact_row(
+                    aid,
+                    generated_id,
+                    getattr(award, "category", ""),
+                    self._transaction_history(award),
+                    checked=checked,
+                    # Already derived for the tracking-window gate and the
+                    # snapshot row; re-deriving would sort and scan the whole
+                    # history a second time.
+                    facts=self._history_facts(award),
+                )
+            except (USASpendingError, OSError, ValueError) as exc:
+                unresolved.append((aid, str(exc)))
+
+        # A first run also backfills awards that live only in the append-only
+        # ledger.  Once a row exists it is refreshed by weekly re-verification,
+        # not by adding hundreds of daily calls here.
+        for aid, gid in self._ledger_awards():
+            if aid in merged or aid in attempted:
+                continue
+            attempted.add(aid)
+            generated_id = canonical_generated_award_id(gid)
+            try:
+                merged[aid] = transaction_facts.build_fact_row(
+                    aid,
+                    generated_id,
+                    transaction_facts.award_category(generated_id),
+                    self._transaction_history_by_generated_id(generated_id),
+                    checked=checked,
+                )
+            except (USASpendingError, OSError, ValueError) as exc:
+                unresolved.append((aid, str(exc)))
+
+        self.transaction_facts_changed = merged != existing
+        if self.transaction_facts_changed:
+            transaction_facts.write_facts(merged)
+
+        if unresolved:
+            print(
+                f"{len(unresolved)} transaction-history enrichment lookup(s) "
+                f"left unresolved; prior facts were retained and missing "
+                f"awards will be retried.",
+                file=sys.stderr,
+            )
+            for aid, error in unresolved:
+                print(f"  {aid}: {error}", file=sys.stderr)
 
     def _resolve_stragglers(self):
         """Second chance for ids the batch award lookup could not match.
@@ -586,7 +972,7 @@ class Search:
                     "Claim Date": _cell(row, "claim_date"),
                 }
 
-    def _add_source_awards(self, source_name: str, source_award_ids: List[str]):
+    def _add_source_awards(self, source_name: str, source_award_ids: list[str]):
         """
         Adds awards from a specific source to the cancellations dictionary.
 
@@ -599,6 +985,16 @@ class Search:
         matches. Ids with no award are recorded in self.unresolved rather than
         dropped.
         """
+        # Indexed once per source rather than rescanned per award: the row is
+        # needed three times below (window gate, description, detection), and
+        # a boolean mask over the whole frame for each award made this
+        # quadratic in the source's row count. First row wins, matching the
+        # .iloc[0] this replaced.
+        source_df = self.sources_cancellation_data[source_name]
+        rows_by_id = {}
+        for _, source_row in source_df.iterrows():
+            rows_by_id.setdefault(str(source_row["Award ID"]), source_row)
+
         for award_id in source_award_ids:
             # Check if the award_id is already in the cancellations dictionary
             # If it is, we skip to the next award_id
@@ -606,42 +1002,43 @@ class Search:
                 continue
             award = self.awards_by_id.get(award_id)
             if award is not None:
-                # Search the relevant source dataframe for the original description
-                # and add it to the award object
-                source_df = self.sources_cancellation_data[source_name]
-                # Get the original description from the source dataframe
-                # We use .loc to find the row where the award_id matches
-                # and then get the original description
-                original_description = source_df.loc[
-                    source_df["Award ID"] == award_id, "description"
-                ].values[0]
+                # The award ids came from this frame, so the row is always
+                # there; indexing rather than guarding keeps a future change
+                # that breaks that assumption loud.
+                source_row = rows_by_id[award_id]
+
+                # The tracking-window backstop, applied here because this is
+                # the one place that has both the source's claim and the
+                # enriched award. A rejected award is not written to the
+                # snapshot at all, and `continue` (rather than break) lets a
+                # LATER source still claim it on its own evidence.
+                #
+                # Gated BEFORE the transaction history is fetched: a rejected
+                # award needs at most the latest action date, so a full paged
+                # walk here would be thrown away for every exclusion.
+                if not self._passes_tracking_window(
+                    source_name, award_id, award, source_row
+                ):
+                    continue
+
+                # One complete transaction fetch supplies every transaction-
+                # derived field below.  The cache also covers the case where a
+                # source's row is rejected by the tracking window and a later
+                # source independently admits the same award.
+                history_facts = self._history_facts(award)
+
+                original_description = source_row["description"]
                 if isinstance(original_description, str):
                     # Preserve source whitespace exactly while making newline
                     # representation deterministic across API responses.
                     original_description = _normalize_newlines(original_description)
 
-                # Same .loc lookup for the source's own detection evidence.
-                # Sources that infer a cancellation from award data compose a
-                # sentence here; NPDV leaves it blank, and an all-blank column
-                # arrives from pandas as NaN, so it is coerced rather than
-                # stringified into the snapshot.
-                detection = source_df.loc[
-                    source_df["Award ID"] == award_id, "status"
-                ].values[0]
-                detection = (
-                    _normalize_newlines(detection).strip()
-                    if isinstance(detection, str)
-                    else ""
-                )
-
-                # The USAspending API stopped returning
-                # period_of_performance.last_modified_date on 2026-04-08
-                # (blanked the column for every source with no code
-                # change). Fall back to the latest transaction's
-                # action_date, which carries the same information.
-                mod_date = award.period_of_performance.last_modified_date
-                if not mod_date and award.transactions:
-                    mod_date = award.transactions[0].action_date
+                # The source's own detection evidence. Sources that infer a
+                # cancellation from award data compose a sentence here; NPDV
+                # leaves it blank, and an all-blank column arrives from pandas
+                # as NaN, so it is coerced rather than stringified into the
+                # snapshot.
+                detection = _cell(source_row, "status")
 
                 # Keyed by column name: SNAPSHOT_COLUMNS drives the output
                 # order, so a new field cannot silently land in the wrong
@@ -651,22 +1048,22 @@ class Search:
                     "District": award.recipient.location.district,
                     "Recipient": award.recipient.name,
                     "Award ID": award_id,
-                    "Latest Modification Number": award.transactions[
-                        0
-                    ].modification_number
-                    if award.transactions
-                    else "",
-                    "Latest Modification Date": mod_date,
+                    # Same producer as the sidecar row, so the two cannot
+                    # disagree about a transaction-derived column.
+                    **transaction_facts.history_columns(history_facts),
                     "Start Date": award.period_of_performance.start_date,
                     "End Date": _award_end_date(award),
                     # Derived independently of which source won this snapshot
                     # row, so a DOGE/NPDV row can retain USAspending history.
                     "Initial Reported End Date": getattr(
                         self, "initial_end_date_rows", {}
-                    ).get(award_id, {}).get("Initial Reported End Date", ""),
+                    )
+                    .get(award_id, {})
+                    .get("Initial Reported End Date", ""),
                     "Award Amount": award.award_amount,
                     "Total Outlays": award.total_outlay,
                     "Description": (original_description or award.description),
+                    "Primary Detection Method": _cell(source_row, "detection_method"),
                     "Detection": detection,
                     "Business Categories": ", ".join(award.recipient.business_types),
                     "URL": canonical_usaspending_url(award.usa_spending_url),

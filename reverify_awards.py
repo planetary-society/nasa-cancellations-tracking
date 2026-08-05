@@ -46,6 +46,15 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 import build_master_ledger
+from award_transaction_facts import (
+    action_kind,
+    build_fact_row,
+    fetch_transactions,
+    load_facts,
+    transaction_sort_key,
+    uses_contract_action_codes,
+    write_facts,
+)
 from build_master_ledger import (
     AUTO_VERIFICATION_PATH,
     LEDGER_PATH,
@@ -53,7 +62,6 @@ from build_master_ledger import (
     load_auto_verification,
 )
 from contract_query import load_snapshot
-from utils import canonical_generated_award_id
 from termination_vocabulary import (
     CLOSEOUT_TEXT,
     is_cause,
@@ -62,6 +70,7 @@ from termination_vocabulary import (
     is_termination,
     is_vacatur,
 )
+from utils import canonical_generated_award_id
 
 RUN_LOG_PATH = os.path.join("verification", "reverify_runs.csv")
 
@@ -100,54 +109,6 @@ RUN_LOG_COLUMNS = [
 # Above this share of failed lookups the run is treated as an outage: the
 # output file is left untouched rather than half-refreshed.
 MAX_UNRESOLVED_SHARE = 0.25
-
-# USAspending caps each transactions page at 5000. The ORM's ``all()`` follows
-# ``hasNext`` until every page has been fetched, so this controls request size
-# without limiting the complete history.
-PAGE_SIZE = 5000
-
-# Splits a modification number into digit/non-digit runs so same-day mods sort
-# in natural order ("2" before "10") rather than lexicographically.
-_MOD_NUMBER_PARTS = re.compile(r"(\d+)")
-
-# --- Action type vocabularies -------------------------------------------
-# Selected by generated-id prefix. This is NOT optional: `D` means "change
-# order" for contracts but "adjustment to completed project" (a closeout) for
-# assistance. Reading one map for the other flips still_terminated <-> closed_out.
-# Labels are FPDS's own action_type_description, confirmed against live data on
-# 2026-07-30. Codes absent from this map route an award to needs_manual_review
-# rather than defaulting, so the map is kept complete for every code actually
-# observed in NASA contract transactions.
-CONTRACT_ACTIONS = {
-    "A": "funding",  # ADDITIONAL WORK (NEW AGREEMENT, JUSTIFICATION REQUIRED)
-    "B": "funding",  # SUPPLEMENTAL AGREEMENT FOR WORK WITHIN SCOPE
-    "C": "funding",  # FUNDING ONLY ACTION
-    "D": "funding",  # CHANGE ORDER
-    "G": "funding",  # EXERCISE AN OPTION
-    "E": "termination_cause",  # TERMINATE FOR DEFAULT (none observed to date)
-    "X": "termination_cause",  # TERMINATE FOR CAUSE
-    "F": "termination_convenience",  # TERMINATE FOR CONVENIENCE (COMPLETE OR PARTIAL)
-    "K": "closeout",  # CLOSE OUT
-    "M": "administrative",  # OTHER ADMINISTRATIVE ACTION
-    "J": "administrative",  # NOVATION AGREEMENT
-    "P": "administrative",  # REREPRESENTATION OF NON-NOVATED MERGER/ACQUISITION
-    "V": "administrative",  # UNIQUE ENTITY ID OR LEGAL BUSINESS NAME CHANGE
-    "W": "administrative",  # ENTITY ADDRESS CHANGE
-    "Y": "administrative",  # ADD SUBCONTRACTING PLAN
-    # LEGAL CONTRACT CANCELLATION. Treated as administrative, not a policy
-    # cancellation: both instances observed are routine procurement unwinds (a
-    # $78k BPA-call deobligation and an $18k software renewal), not programme
-    # terminations. Revisit if a large one appears.
-    "N": "administrative",
-}
-
-ASSISTANCE_ACTIONS = {
-    "A": "funding",
-    "B": "funding",
-    "C": "funding",
-    "D": "closeout",
-    "E": "funding",
-}
 
 
 def _is_reversal(txn):
@@ -210,19 +171,6 @@ def _obligation(txn):
         return None
 
 
-def _sort_key(txn):
-    modification = str(getattr(txn, "modification_number", "") or "")
-    natural_modification = tuple(
-        (1, int(part)) if part.isdigit() else (0, part.casefold())
-        for part in _MOD_NUMBER_PARTS.split(modification)
-        if part
-    )
-    return (
-        str(getattr(txn, "action_date", "") or ""),
-        natural_modification,
-    )
-
-
 def transaction_baseline_amount(txns):
     """Return the highest cumulative obligation in a complete transaction history.
 
@@ -237,21 +185,13 @@ def transaction_baseline_amount(txns):
 
     balance = 0.0
     maximum = 0.0
-    for txn in sorted(txns, key=_sort_key):
+    for txn in sorted(txns, key=transaction_sort_key):
         obligation = _obligation(txn)
         if obligation is None:
             return None
         balance += obligation
         maximum = max(maximum, balance)
     return maximum
-
-
-def _kind(txn, is_contract):
-    """Map a transaction's action_type to a category, or None if unrecognised."""
-    code = str(getattr(txn, "action_type", "") or "").strip().upper()
-    if not code:
-        return None
-    return (CONTRACT_ACTIONS if is_contract else ASSISTANCE_ACTIONS).get(code)
 
 
 def _describe(txn):
@@ -274,8 +214,8 @@ def classify_transactions(txns, *, is_contract, ledger_row):
             "No transactions returned for this award; cannot judge.",
             {"reason": "no_transactions"},
         )
-    txns = sorted(txns, key=_sort_key)
-    kinds = [_kind(t, is_contract) for t in txns]
+    txns = sorted(txns, key=transaction_sort_key)
+    kinds = [action_kind(t, is_contract) for t in txns]
 
     unknown = [
         str(getattr(t, "action_type", "") or "")
@@ -493,19 +433,6 @@ def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):
     return selected, dict(tiers)
 
 
-def fetch_transactions(client, gid):
-    return (
-        client.transactions.award_id(gid)
-        .order_by("action_date", "asc")
-        .page_size(PAGE_SIZE)
-        # The ORM otherwise applies its global 10,000-row safety default.
-        # An explicit bound bypasses that default while `hasNext` still ends
-        # the query at the API's actual final page.
-        .limit(sys.maxsize)
-        .all()
-    )
-
-
 def build_row(aid, rec, verdict, txns, previous, human, *, today, ok):
     """Assemble one auto_verification.csv row, preserving retry bookkeeping."""
     prev = previous.get(aid, {})
@@ -533,7 +460,7 @@ def build_row(aid, rec, verdict, txns, previous, human, *, today, ok):
         f"{baseline:.2f}" if baseline is not None else "unknown"
     )
     if txns:
-        latest = max(txns, key=_sort_key)
+        latest = max(txns, key=transaction_sort_key)
         row["Latest Mod"] = str(getattr(latest, "modification_number", "") or "")
         row["Latest Mod Date"] = str(getattr(latest, "action_date", "") or "")
     row["Termination Mod"] = verdict.signals.get("term_mod", "")
@@ -550,6 +477,16 @@ def build_row(aid, rec, verdict, txns, previous, human, *, today, ok):
     else:
         row["Verified Date"] = prev.get("Verified Date", today)
     return row
+
+
+def merge_transaction_fact(rows, aid, gid, txns, *, checked):
+    """Retain facts from the transaction list already fetched for a verdict."""
+    if not txns:
+        return False
+    new_row = build_fact_row(aid, gid, "", txns, checked=checked)
+    changed = rows.get(aid) != new_row
+    rows[aid] = new_row
+    return changed
 
 
 def write_auto(rows):
@@ -622,6 +559,8 @@ def main(argv=None):
     today = date.today().isoformat()
     ledger = load_snapshot(LEDGER_PATH)
     previous = load_auto_verification()
+    previous_facts = load_facts()
+    persisted_facts = dict(previous_facts)
     human = load_human_verdicts()
 
     selected, tiers = select_awards(
@@ -667,9 +606,14 @@ def main(argv=None):
                 try:
                     txns = fetch_transactions(client, gid)
                     verdict = classify_transactions(
-                        txns, is_contract=gid.startswith("CONT_"), ledger_row=rec
+                        txns,
+                        is_contract=uses_contract_action_codes(gid),
+                        ledger_row=rec,
                     )
                     ok = verdict.status != "unresolved"
+                    merge_transaction_fact(
+                        persisted_facts, aid, gid, txns, checked=today
+                    )
                 except (USASpendingError, OSError) as e:
                     verdict = Verdict(
                         "unresolved",
@@ -710,6 +654,14 @@ def main(argv=None):
         "Duration Seconds": int((datetime.now() - started).total_seconds()),
     }
 
+    transaction_facts_changed = persisted_facts != previous_facts
+    if transaction_facts_changed:
+        write_facts(persisted_facts)
+        print(
+            f"Wrote transaction facts for {len(persisted_facts)} award(s); "
+            "successful lookups are retained independently of the verdict run."
+        )
+
     if share > MAX_UNRESOLVED_SHARE:
         stats["Exit Status"] = "aborted_outage"
         append_run_log(stats)
@@ -719,6 +671,8 @@ def main(argv=None):
             f"outage and leaving {AUTO_VERIFICATION_PATH} untouched rather than "
             f"half-refreshing it."
         )
+        if transaction_facts_changed and not args.no_rebuild:
+            build_master_ledger.build()
         return 1
 
     write_auto(rows)

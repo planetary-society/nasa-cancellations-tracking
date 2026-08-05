@@ -14,8 +14,9 @@ from datetime import date
 import pytest
 
 import reverify_awards
+from award_transaction_facts import PAGE_SIZE, transaction_history_facts
+from reverify_awards import classify_transactions, generated_id
 from tests.helpers import FakeTxn
-from reverify_awards import classify_transactions, generated_id, PAGE_SIZE
 
 LEDGER_ROW = {"End Date": "2030-01-01"}
 
@@ -83,6 +84,73 @@ def test_fetch_transactions_disables_the_orm_default_result_cap():
 
     assert reverify_awards.fetch_transactions(client, "CONT_AWD_1") == []
     assert query.explicit_limit == sys.maxsize
+
+
+# --- transaction-history facts --------------------------------------------
+
+
+def test_history_facts_keep_formal_actions_after_a_later_continuation():
+    txns = [
+        FakeTxn("2025-06-01", "P00004", "B"),
+        FakeTxn("2024-01-01", "0", "A"),
+        FakeTxn("2025-03-01", "P00003", "K"),
+        FakeTxn("2025-02-01", "P00002", "F"),
+    ]
+
+    facts = transaction_history_facts(txns, is_contract=True)
+
+    assert facts.first.modification_number == "0"
+    assert facts.latest.modification_number == "P00004"
+    assert facts.termination.modification_number == "P00002"
+    assert facts.closeout.modification_number == "P00003"
+
+
+def test_history_facts_use_assistance_action_vocabulary():
+    txns = [
+        FakeTxn("2024-01-01", "0", "A"),
+        # D is a contract funding action but an assistance closeout.
+        FakeTxn("2025-02-01", "P00001", "D"),
+    ]
+
+    assistance = transaction_history_facts(txns, is_contract=False)
+    contract = transaction_history_facts(txns, is_contract=True)
+
+    assert assistance.closeout.modification_number == "P00001"
+    assert contract.closeout is None
+
+
+def test_history_facts_order_same_day_modifications_naturally():
+    facts = transaction_history_facts(
+        [
+            FakeTxn("2025-01-01", "P00010", "B"),
+            FakeTxn("2025-01-01", "P0002", "A"),
+        ],
+        is_contract=True,
+    )
+
+    assert facts.first.modification_number == "P0002"
+    assert facts.latest.modification_number == "P00010"
+
+
+def test_weekly_reverification_reuses_fetched_history_for_persisted_facts():
+    txns = [
+        FakeTxn("2024-01-01", "0", "A"),
+        FakeTxn("2025-02-01", "P00001", "F"),
+    ]
+    rows = {}
+
+    changed = reverify_awards.merge_transaction_fact(
+        rows,
+        "A-1",
+        "CONT_AWD_A-1",
+        txns,
+        checked="2026-07-31",
+    )
+
+    assert changed
+    assert rows["A-1"]["Transaction Count"] == "2"
+    assert rows["A-1"]["Latest Modification Number"] == "P00001"
+    assert rows["A-1"]["Termination Modification Number"] == "P00001"
 
 
 # --- transaction-derived amount baseline ----------------------------------

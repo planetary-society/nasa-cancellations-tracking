@@ -1,27 +1,32 @@
-"""Transaction-derived Initial Reported End Date enrichment and persistence."""
+"""Transaction-derived Initial Reported End Date enrichment and persistence.
+
+The provider is the local mirror. The public API publishes no
+period-of-performance date on any transaction route, and the bulk-download
+route that did carry it was removed as far too expensive for one column -
+see initial_end_dates. Without mirror credentials the enrichment resolves
+nothing and leaves the committed sidecar untouched.
+"""
 
 import csv
-import os
-from pathlib import Path
 
 import pytest
 
 import build_master_ledger as bml
+import initial_end_dates as ied
+import local_usaspending_mirror_query as mirror
 import search as search_module
-import usaspending_terminations_query as utq
 
 
-def target(aid="A-1", category="contract", gid=None, lookup=""):
+def target(aid="A-1", category="contract", gid=None):
     prefixes = {
         "contract": "CONT_AWD_",
         "idv": "CONT_IDV_",
         "assistance": "ASST_NON_",
     }
-    return utq.InitialEndDateTarget(
+    return ied.InitialEndDateTarget(
         aid,
         gid or f"{prefixes[category]}{aid}_8000",
         category,
-        lookup,
     )
 
 
@@ -43,7 +48,7 @@ def txn(
 
 
 def test_zero_base_modification_wins_over_an_earlier_nonbase_row():
-    result = utq.select_initial_reported_end_date(
+    result = ied.select_initial_reported_end_date(
         target(),
         [
             txn("T-P1", "2020-01-01", "P00001", "2028-01-01"),
@@ -58,7 +63,7 @@ def test_zero_base_modification_wins_over_an_earlier_nonbase_row():
 
 
 def test_same_day_modifications_use_natural_order_and_stable_transaction_tie_break():
-    result = utq.select_initial_reported_end_date(
+    result = ied.select_initial_reported_end_date(
         target(),
         [
             txn("T-10", "2020-01-01", "P10", "2030-01-01"),
@@ -73,7 +78,7 @@ def test_same_day_modifications_use_natural_order_and_stable_transaction_tie_bre
 
 
 def test_blank_base_date_falls_forward_to_earliest_nonblank_transaction():
-    result = utq.select_initial_reported_end_date(
+    result = ied.select_initial_reported_end_date(
         target(),
         [
             txn("T-0", "2020-01-01", "0000"),
@@ -87,7 +92,7 @@ def test_blank_base_date_falls_forward_to_earliest_nonblank_transaction():
 
 
 def test_no_reported_date_is_a_terminal_blank_result():
-    result = utq.select_initial_reported_end_date(
+    result = ied.select_initial_reported_end_date(
         target(), [txn("T-0", "2020-01-01", "0")]
     )
 
@@ -101,139 +106,312 @@ def test_malformed_dates_fail_loudly(field):
     row[field] = "not-a-date"
 
     with pytest.raises(RuntimeError, match=field):
-        utq.select_initial_reported_end_date(target(), [row])
+        ied.select_initial_reported_end_date(target(), [row])
 
 
-# --- download parsing and batching ---------------------------------------
+# --- the status vocabulary -------------------------------------------------
 
 
-class FakeQuery:
-    def __init__(self):
-        self.category = ""
-        self.ids = ()
-        self.period = ()
-
-    def contracts(self):
-        self.category = "contract"
-        return self
-
-    def idvs(self):
-        self.category = "idv"
-        return self
-
-    def grants(self):
-        self.category = "assistance"
-        return self
-
-    def award_ids(self, *ids):
-        self.ids = ids
-        return self
-
-    def time_period(self, start, end):
-        self.period = (start, end)
-        return self
-
-
-class FakeJob:
-    def __init__(self, path):
-        self.path = path
-        self.wait_args = None
-
-    def wait_for_completion(self, **kwargs):
-        self.wait_args = kwargs
-        return [self.path]
-
-
-class FakeDownloads:
-    def __init__(self):
-        self.calls = []
-        self.destinations = []
-
-    def search(self, query, *, spending_level, destination_dir):
-        self.calls.append((query, spending_level))
-        self.destinations.append(destination_dir)
-        category = query.category
-        aid = query.ids[0].strip('"')
-        if category == "assistance":
-            id_header = "award_id_fain"
-            transaction_header = "assistance_transaction_unique_key"
-        elif category == "idv":
-            id_header = "award_id_piid"
-            transaction_header = "idv_transaction_unique_key"
-        else:
-            id_header = "award_id_piid"
-            transaction_header = "contract_transaction_unique_key"
-
-        path = os.path.join(destination_dir, f"{category}_transactions.csv")
-        fieldnames = [
-            id_header,
-            transaction_header,
-            "action_date",
-            "modification_number",
-            "period_of_performance_current_end_date",
-            "last_date_to_order",
-        ]
-        with open(path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerow(
-                {
-                    id_header: aid,
-                    transaction_header: f"TX-{category}",
-                    "action_date": "2020-01-01",
-                    "modification_number": "0",
-                    "period_of_performance_current_end_date": "2028-01-01",
-                    "last_date_to_order": "2027-01-01" if category == "idv" else "",
-                }
-            )
-        return FakeJob(path)
-
-
-def test_downloads_are_batched_by_category_and_idv_prefers_last_date_to_order():
-    downloads = FakeDownloads()
-    client = type(
-        "Client",
-        (),
-        {
-            "awards": type("Awards", (), {"search": staticmethod(FakeQuery)})(),
-            "downloads": downloads,
-        },
-    )()
-    targets = [
-        target("C-1", "contract"),
-        target("I-1", "idv"),
-        target("G-1", "assistance"),
-    ]
-
-    results = utq.fetch_initial_reported_end_dates(
-        client, targets, end_date="2026-07-31"
+def test_every_status_is_classified_terminal_or_transient():
+    """The persist/retry decision must be forced, not defaulted. A status that
+    is in neither set would fall through search.py's filter and be written to a
+    write-once file; one in both would be ambiguous."""
+    assert not (ied.TERMINAL_STATUSES & ied.TRANSIENT_STATUSES)
+    assert ied.INITIAL_END_DATE_STATUSES == (
+        ied.TERMINAL_STATUSES | ied.TRANSIENT_STATUSES
     )
 
-    assert [result.category for result in results] == [
-        "contract",
-        "idv",
-        "assistance",
-    ]
-    assert {result.award_id: result.initial_end_date for result in results} == {
-        "C-1": "2028-01-01",
-        "I-1": "2027-01-01",
-        "G-1": "2028-01-01",
+
+def test_the_ledger_validator_accepts_exactly_the_emittable_statuses():
+    """build_master_ledger validates the persisted vocabulary. It used to hold
+    its own copy, which could drift from what the producers emit - a new status
+    would abort the NEXT build, after the sidecar had already been written."""
+    assert bml.INITIAL_END_DATE_STATUSES is ied.INITIAL_END_DATE_STATUSES
+
+
+def test_every_status_any_producer_emits_is_in_the_vocabulary():
+    """Greps the producers rather than trusting the constant: the point is to
+    catch a literal added at a call site without updating the sets."""
+    import pathlib
+    import re
+
+    emitted = set()
+    for name in (
+        "initial_end_dates.py",
+        "local_usaspending_mirror_query.py",
+        "search.py",
+    ):
+        text = pathlib.Path(name).read_text()
+        emitted |= set(re.findall(r'unresolved\(\s*target,\s*"([a-z_]+)"', text))
+        emitted |= set(re.findall(r'"(resolved|no_reported_end_date)"', text))
+    assert emitted, "found no status literals - has the emit pattern changed?"
+    assert emitted <= ied.INITIAL_END_DATE_STATUSES, (
+        f"unclassified status(es): {sorted(emitted - ied.INITIAL_END_DATE_STATUSES)}"
+    )
+
+
+# --- the mirror provider ---------------------------------------------------
+
+
+class FakeCursor:
+    """Stands in for a psycopg dict_row cursor over rpt.transaction_search."""
+
+    def __init__(self, rows, execute_error=None):
+        self.rows = rows
+        self.execute_error = execute_error
+        self.executed = []
+        self._result = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        if sql.strip().startswith("SET"):
+            self._result = []
+            return
+        if self.execute_error:
+            raise self.execute_error
+        wanted = set(params["generated_award_ids"])
+        self._result = [
+            r for r in self.rows if r["generated_unique_award_id"] in wanted
+        ]
+
+    def fetchall(self):
+        return self._result
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class FakeConnection:
+    """Context-manager protocol lives on the type, not on instance attributes."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self, **kwargs):
+        return self._cursor
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _mirror_with(cursor, monkeypatch, configured=True, connect_error=None):
+    """A mirror query whose psycopg connection yields `cursor`.
+
+    Offline by construction, matching tests/test_local_mirror.py: the driver is
+    stubbed into sys.modules, so no socket is ever opened.
+    """
+    import sys as _sys
+    import types
+
+    fake_psycopg = types.ModuleType("psycopg")
+    fake_psycopg.OperationalError = type("OperationalError", (Exception,), {})
+
+    def connect(*args, **kwargs):
+        if connect_error:
+            raise fake_psycopg.OperationalError(connect_error)
+        return FakeConnection(cursor)
+
+    fake_psycopg.connect = connect
+    rows_mod = types.ModuleType("psycopg.rows")
+    rows_mod.dict_row = object()
+    fake_psycopg.rows = rows_mod
+    monkeypatch.setitem(_sys.modules, "psycopg", fake_psycopg)
+    monkeypatch.setitem(_sys.modules, "psycopg.rows", rows_mod)
+
+    q = mirror.LocalUSASpendingMirrorQuery.__new__(mirror.LocalUSASpendingMirrorQuery)
+    monkeypatch.setattr(q, "is_configured", lambda: configured)
+    monkeypatch.setattr(q, "_dsn", lambda: "postgresql://x/y")
+    return q
+
+
+def _row(gid, txn_id, action_date, mod, end_date):
+    return {
+        "generated_unique_award_id": gid,
+        "transaction_id": txn_id,
+        "action_date": action_date,
+        "modification_number": mod,
+        "end_date": end_date,
     }
-    assert len(downloads.calls) == 3
-    for query, spending_level in downloads.calls:
-        assert query.ids[0] in {"C-1", "I-1", "G-1"}
-        assert query.period == (utq.INITIAL_END_DATE_START, "2026-07-31")
-        assert spending_level == ["transactions"]
-    # TemporaryDirectory owns every extracted artifact.
-    assert all(not os.path.exists(path) for path in downloads.destinations)
 
 
-def test_download_without_required_transaction_columns_fails_loudly(tmp_path):
-    path = tmp_path / "not_transactions.csv"
-    path.write_text("Award ID,Action Date\nA-1,2020-01-01\n", encoding="utf-8")
+def test_mirror_resolves_the_base_transaction_end_date(monkeypatch):
+    cur = FakeCursor(
+        [
+            _row("CONT_AWD_A-1_8000", "TX-1", "2017-07-01", "0", "2022-12-31"),
+            _row("CONT_AWD_A-1_8000", "TX-2", "2025-09-02", "P00032", "2024-09-30"),
+        ]
+    )
+    q = _mirror_with(cur, monkeypatch)
 
-    with pytest.raises(RuntimeError, match="no transaction CSV"):
-        utq._transaction_download_rows([str(path)], "contract", {"A-1"})
+    (result,) = q.fetch_initial_reported_end_dates([target("A-1")])
+
+    assert result.initial_end_date == "2022-12-31"
+    assert result.basis == "base_transaction"
+    assert result.status == "resolved"
+    assert result.transaction_id == "TX-1"
+
+
+def test_mirror_reaches_back_before_the_tracking_window(monkeypatch):
+    """The originally-awarded end date predates the window for any long-running
+    award, so this query must not carry the window bound the detection nets do."""
+    cur = FakeCursor(
+        [_row("CONT_AWD_A-1_8000", "TX-1", "2017-07-01", "0", "2022-12-31")]
+    )
+    q = _mirror_with(cur, monkeypatch)
+    q.fetch_initial_reported_end_dates([target("A-1")])
+
+    sql = [s for s, _ in cur.executed if s.strip().startswith("SELECT")]
+    assert mirror.INITIAL_END_DATE_START in sql[0]
+    assert mirror.TRACKING_WINDOW_START not in sql[0]
+
+
+def test_an_award_absent_from_the_lagging_mirror_is_recorded_not_raised(monkeypatch):
+    """The mirror lags the live API by 2-6 weeks, so a just-flagged award can be
+    genuinely missing. One absent award must not abort the others."""
+    cur = FakeCursor(
+        [_row("CONT_AWD_A-1_8000", "TX-1", "2017-07-01", "0", "2022-12-31")]
+    )
+    q = _mirror_with(cur, monkeypatch)
+
+    results = {
+        r.award_id: r
+        for r in q.fetch_initial_reported_end_dates([target("A-1"), target("B-2")])
+    }
+
+    assert results["A-1"].status == "resolved"
+    assert results["B-2"].status == "not_in_mirror"
+    assert results["B-2"].initial_end_date == ""
+
+
+def test_the_query_is_keyed_on_the_generated_award_id(monkeypatch):
+    """Not COALESCE(piid, fain, uri). This query has no tracking-window bound to
+    give it index access, so a non-sargable expression here would leave nothing
+    keeping Postgres off a scan of the 236M-row transaction table."""
+    cur = FakeCursor(
+        [_row("CONT_AWD_A-1_8000", "TX-1", "2017-07-01", "0", "2022-12-31")]
+    )
+    q = _mirror_with(cur, monkeypatch)
+    q.fetch_initial_reported_end_dates([target("A-1")])
+
+    sql, params = next(
+        (s, p) for s, p in cur.executed if s.strip().startswith("SELECT")
+    )
+    assert "generated_unique_award_id = ANY" in sql
+    assert "COALESCE(ts.piid" not in sql
+    assert params == {"generated_award_ids": ["CONT_AWD_A-1_8000"]}
+
+
+def test_a_missing_column_fails_loudly_and_names_what_it_needs(monkeypatch):
+    """transaction_unique_id and ordering_period_end_date are the two columns
+    no detection net proves exist. This feeds a write-once provenance file, so
+    a silently substituted column would be recorded as `resolved` and never
+    revisited - it must abort instead."""
+    cur = FakeCursor([], execute_error=Exception('column "ordering_period_end_date"'))
+    q = _mirror_with(cur, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="ordering_period_end_date"):
+        q.fetch_initial_reported_end_dates([target("A-1")])
+
+
+def test_the_query_never_asks_for_the_api_display_name(monkeypatch):
+    """`last_date_to_order` is what the API CALLS this value, not what any
+    table stores it as - the SQL asked for it by display name and every run
+    died on UndefinedColumn. The real column is ordering_period_end_date, and
+    it is TEXT here while the period-of-performance end is DATE, so both arms
+    of the COALESCE must be text or Postgres cannot match the types."""
+    cur = FakeCursor([])
+    q = _mirror_with(cur, monkeypatch)
+    q.fetch_initial_reported_end_dates([target("A-1")])
+
+    sql, _ = next((s, p) for s, p in cur.executed if s.strip().startswith("SELECT"))
+    # Comments stripped: the SQL explains the trap by name, and only what
+    # Postgres actually parses is under test here.
+    executable = "\n".join(
+        line for line in sql.splitlines() if not line.strip().startswith("--")
+    )
+    assert "last_date_to_order" not in executable
+    assert "ts.ordering_period_end_date" in executable
+    assert "period_of_performance_current_end_date::text" in executable
+
+
+def test_no_targets_makes_no_connection(monkeypatch):
+    q = mirror.LocalUSASpendingMirrorQuery.__new__(mirror.LocalUSASpendingMirrorQuery)
+    assert q.fetch_initial_reported_end_dates([]) == []
+
+
+def test_missing_credentials_raise_the_typed_unavailable_error(monkeypatch):
+    cur = FakeCursor([])
+    q = _mirror_with(cur, monkeypatch, configured=False)
+    with pytest.raises(mirror.LocalMirrorUnavailableError):
+        q.fetch_initial_reported_end_dates([target("A-1")])
+
+
+def test_a_lagging_award_is_not_written_and_so_is_retried(workdir, monkeypatch):
+    """not_in_mirror is the one NON-terminal outcome. The sidecar is write-once
+    and enrichment skips anything already in it, so persisting a 2-6 week
+    replication lag would retire the award from lookup permanently."""
+    monkeypatch.setattr(
+        search_module.LocalUSASpendingMirrorQuery,
+        "fetch_initial_reported_end_dates",
+        lambda self, targets: [
+            ied.InitialEndDateResult(
+                t.award_id,
+                t.generated_award_id,
+                t.category,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "not_in_mirror",
+            )
+            for t in targets
+        ],
+    )
+    obj = search_module.Search.__new__(search_module.Search)
+    obj.client = object()
+    obj.unique_award_ids = ["NEW-1"]
+    obj.awards_by_id = {"NEW-1": FakeAward()}
+    obj.skipped_sources = set()
+
+    obj._enrich_initial_reported_end_dates()
+
+    assert obj.initial_end_date_rows == {}
+    assert not obj.initial_end_dates_changed
+    assert bml.load_initial_end_dates() == {}
+
+
+def test_without_mirror_credentials_enrichment_is_skipped_not_fatal(
+    workdir, monkeypatch, capsys
+):
+    """The CI path. The public API cannot supply this column at all, so a run
+    without mirror access resolves nothing and leaves the committed sidecar
+    exactly as it was."""
+
+    def unavailable(self, targets):
+        raise mirror.LocalMirrorUnavailableError("no database credentials")
+
+    monkeypatch.setattr(
+        search_module.LocalUSASpendingMirrorQuery,
+        "fetch_initial_reported_end_dates",
+        unavailable,
+    )
+    obj = search_module.Search.__new__(search_module.Search)
+    obj.client = object()
+    obj.unique_award_ids = ["NEW-1"]
+    obj.awards_by_id = {"NEW-1": FakeAward()}
+    obj.skipped_sources = set()
+
+    obj._enrich_initial_reported_end_dates()
+
+    assert not obj.initial_end_dates_changed
+    assert "Skipping Initial Reported End Date" in capsys.readouterr().err
 
 
 # --- durable cache and search enrichment ---------------------------------
@@ -259,10 +437,10 @@ def test_search_backfills_ledger_and_current_awards_atomically(
     )
     seen = []
 
-    def fake_fetch(client, targets, *, end_date):
+    def fake_fetch(targets):
         seen.extend(targets)
         return [
-            utq.InitialEndDateResult(
+            ied.InitialEndDateResult(
                 item.award_id,
                 item.generated_award_id,
                 item.category,
@@ -276,11 +454,16 @@ def test_search_backfills_ledger_and_current_awards_atomically(
             for item in targets
         ]
 
-    monkeypatch.setattr(search_module, "fetch_initial_reported_end_dates", fake_fetch)
+    monkeypatch.setattr(
+        search_module.LocalUSASpendingMirrorQuery,
+        "fetch_initial_reported_end_dates",
+        lambda self, targets: fake_fetch(targets),
+    )
     obj = search_module.Search.__new__(search_module.Search)
     obj.client = object()
     obj.unique_award_ids = ["NEW-1"]
     obj.awards_by_id = {"NEW-1": FakeAward()}
+    obj.skipped_sources = set()
 
     obj._enrich_initial_reported_end_dates()
 
@@ -292,7 +475,9 @@ def test_search_backfills_ledger_and_current_awards_atomically(
     assert stored["NEW-1"]["Initial Reported End Date"] == "2024-12-31"
 
 
-def test_cached_terminal_result_prevents_repeat_download(workdir, write_csv, monkeypatch):
+def test_cached_terminal_result_prevents_a_repeat_lookup(
+    workdir, write_csv, monkeypatch
+):
     row = {column: "" for column in bml.INITIAL_END_DATE_COLUMNS}
     row.update(
         {
@@ -314,14 +499,15 @@ def test_cached_terminal_result_prevents_repeat_download(workdir, write_csv, mon
         [row],
     )
     monkeypatch.setattr(
-        search_module,
+        search_module.LocalUSASpendingMirrorQuery,
         "fetch_initial_reported_end_dates",
-        lambda *args, **kwargs: pytest.fail("cached award was downloaded again"),
+        lambda self, targets: pytest.fail("cached award was queried again"),
     )
     obj = search_module.Search.__new__(search_module.Search)
     obj.client = object()
     obj.unique_award_ids = ["NEW-1"]
     obj.awards_by_id = {"NEW-1": FakeAward()}
+    obj.skipped_sources = set()
 
     obj._enrich_initial_reported_end_dates()
 
@@ -338,7 +524,7 @@ def test_enrichment_only_change_rebuilds_unchanged_snapshot_ledger(
             "Source": "DOGE",
             "Award ID": "NEW-1",
             "Recipient": "Recipient",
-            "Latest Modification Date": "2026-01-01",
+            "Latest Action Date": "2026-01-01",
             "Initial Reported End Date": "2024-12-31",
         }
     )
@@ -350,7 +536,16 @@ def test_enrichment_only_change_rebuilds_unchanged_snapshot_ledger(
 
     class Source:
         def search(self):
-            return __import__("pandas").DataFrame([{"Award ID": "NEW-1"}])
+            return __import__("pandas").DataFrame(
+                [
+                    {
+                        "Award ID": "NEW-1",
+                        "action_date": "2025-06-01",
+                        "detection_basis": "evidence",
+                        "detection_method": "external_claim",
+                    }
+                ]
+            )
 
     obj = search_module.Search.__new__(search_module.Search)
     obj.sources = {"DOGE": Source}
@@ -364,6 +559,8 @@ def test_enrichment_only_change_rebuilds_unchanged_snapshot_ledger(
     obj.ignore_award_ids = []
     obj.initial_end_date_rows = {}
     obj.initial_end_dates_changed = False
+    obj.transaction_facts_changed = False
+    obj.window_rejects = []
 
     monkeypatch.setattr(obj, "_build_claim_index", lambda: None)
     monkeypatch.setattr(obj, "_fetch_awards", lambda: None)
@@ -376,16 +573,17 @@ def test_enrichment_only_change_rebuilds_unchanged_snapshot_ledger(
         }
 
     monkeypatch.setattr(obj, "_enrich_initial_reported_end_dates", enrich)
+    monkeypatch.setattr(obj, "_enrich_transaction_facts", lambda: None)
     monkeypatch.setattr(
         obj,
         "_add_source_awards",
-        lambda source, award_ids: obj.unique_cancellations.update(
-            {"NEW-1": prior_row}
-        ),
+        lambda source, award_ids: obj.unique_cancellations.update({"NEW-1": prior_row}),
     )
     monkeypatch.setattr(obj, "_report_review_queue", lambda: None)
     builds = []
-    monkeypatch.setattr(search_module.build_master_ledger, "build", lambda: builds.append(1))
+    monkeypatch.setattr(
+        search_module.build_master_ledger, "build", lambda: builds.append(1)
+    )
 
     obj._search()
 
@@ -401,6 +599,10 @@ def test_winning_source_cannot_suppress_initial_end_date():
                     "Award ID": "NEW-1",
                     "description": "claimed termination",
                     "status": "TERMINATED",
+                    # Part of every source's output contract now; the ingest
+                    # tracking-window gate reads both.
+                    "action_date": "2025-06-01",
+                    "detection_basis": "evidence",
                 }
             ]
         )
@@ -409,6 +611,7 @@ def test_winning_source_cannot_suppress_initial_end_date():
     obj.claims = {}
     obj.unresolved = {}
     obj.ignore_award_ids = []
+    obj.window_rejects = []
     award = type(
         "Award",
         (),
@@ -425,7 +628,6 @@ def test_winning_source_cannot_suppress_initial_end_date():
                 "Period",
                 (),
                 {
-                    "last_modified_date": "2026-01-01",
                     "start_date": "2020-01-01",
                     "end_date": "2026-12-31",
                 },
@@ -442,15 +644,12 @@ def test_winning_source_cannot_suppress_initial_end_date():
         },
     )()
     obj.awards_by_id = {"NEW-1": award}
-    obj.initial_end_date_rows = {
-        "NEW-1": {"Initial Reported End Date": "2024-12-31"}
-    }
+    obj.initial_end_date_rows = {"NEW-1": {"Initial Reported End Date": "2024-12-31"}}
 
     obj._add_source_awards("DOGE", ["NEW-1"])
 
     assert (
-        obj.unique_cancellations["NEW-1"]["Initial Reported End Date"]
-        == "2024-12-31"
+        obj.unique_cancellations["NEW-1"]["Initial Reported End Date"] == "2024-12-31"
     )
 
 
@@ -524,9 +723,7 @@ def test_full_build_backfills_sidecar_and_prefers_it_for_trend(workdir, write_cs
     assert row["End Date Trend"] == "truncated"
 
 
-def test_incremental_build_does_not_overwrite_recorded_initial_date(
-    workdir, write_csv
-):
+def test_incremental_build_does_not_overwrite_recorded_initial_date(workdir, write_csv):
     write_csv(
         "consolidated/nasa_x_2026-07-30.csv",
         SNAPSHOT_COLUMNS,

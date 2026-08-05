@@ -81,12 +81,79 @@ def test_a_source_going_to_zero_fails_even_without_shrinkage(workdir):
     assert any("FAIL source_presence" in m and "FPDS" in m for m in msgs)
 
 
+def test_an_explicitly_skipped_optional_source_does_not_fail_validation(workdir):
+    """The local mirror is allowed to disappear only when collection records
+    that it was unavailable; this must not weaken checks for other sources."""
+    write(
+        "consolidated/prev.csv",
+        rows(10, "DOGE") + rows(5, "LocalUSASpendingMirror", start=100),
+    )
+    write("consolidated/new.csv", rows(10, "DOGE"))
+
+    ok, msgs = vs.validate(
+        "consolidated/new.csv",
+        "consolidated/prev.csv",
+        skipped_sources={"LocalUSASpendingMirror"},
+    )
+
+    assert ok
+    assert not any("FAIL" in msg for msg in msgs)
+    assert not os.path.exists(vs.DISAPPEARANCE_LOG)
+
+
 def test_disappearance_log_is_not_written_when_quarantined(workdir):
     """A rejected snapshot must not pollute the review queue."""
     write("consolidated/prev.csv", rows(20))
     write("consolidated/new.csv", rows(10))
     vs.validate("consolidated/new.csv", "consolidated/prev.csv")
     assert not os.path.exists(vs.DISAPPEARANCE_LOG)
+
+
+def test_reviewed_methodology_removals_do_not_trigger_shrinkage(workdir):
+    write("consolidated/prev.csv", rows(20))
+    write("consolidated/new.csv", rows(10))
+
+    ok, messages = vs.validate(
+        "consolidated/new.csv",
+        "consolidated/prev.csv",
+        reviewed_removals={f"A-{i}" for i in range(10, 20)},
+    )
+
+    assert ok
+    assert not any("FAIL shrinkage" in message for message in messages)
+    assert any("reviewed excluded_by_design" in message for message in messages)
+    assert not os.path.exists(vs.DISAPPEARANCE_LOG)
+
+
+def test_unreviewed_disappearances_still_quarantine(workdir):
+    write("consolidated/prev.csv", rows(20))
+    write("consolidated/new.csv", rows(10))
+
+    ok, messages = vs.validate(
+        "consolidated/new.csv",
+        "consolidated/prev.csv",
+        reviewed_removals={"A-19"},
+    )
+
+    assert not ok
+    assert any("FAIL shrinkage" in message for message in messages)
+
+
+def test_only_excluded_by_design_is_loaded_as_a_reviewed_removal(workdir):
+    os.makedirs(os.path.dirname(vs.REVIEWED_REMOVALS_PATH), exist_ok=True)
+    with open(vs.REVIEWED_REMOVALS_PATH, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(
+            fh, fieldnames=["Award ID", "Status", "Verified Date", "Evidence"]
+        )
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"Award ID": "A-1", "Status": "excluded_by_design"},
+                {"Award ID": "A-2", "Status": "continued"},
+            ]
+        )
+
+    assert vs.load_reviewed_removals() == {"A-1"}
 
 
 @pytest.mark.xfail(

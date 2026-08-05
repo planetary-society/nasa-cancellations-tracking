@@ -40,6 +40,8 @@ jobs:
         # Add error handling for missing requirements.txt if desired
 
       - name: Run the Search Script
+        id: search
+        continue-on-error: true
         run: |
 
           python search.py
@@ -55,14 +57,17 @@ jobs:
       # older text (reinstated, vacated) get lost. Re-reading the archive costs
       # ~2 seconds.
       #
-      # Skipped automatically if search.py failed - a run that aborted must not
-      # publish a ledger built on a rejected snapshot.
+      # On failure search.py has already rebuilt from accepted snapshots plus
+      # any successful metadata sidecars. Never run the normal publication
+      # build here: its membership must remain gated by snapshot acceptance.
       - name: Update the Master Ledger
+        if: steps.search.outcome == 'success'
         run: |
 
           python build_master_ledger.py
 
       - name: Commit and Push Changes
+        if: steps.search.outcome == 'success'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Automated daily update"
@@ -72,3 +77,17 @@ jobs:
           commit_user_name: GitHub Actions Bot
           commit_user_email: github-actions-bot@users.noreply.github.com
           commit_author: GitHub Actions Bot <github-actions-bot@users.noreply.github.com>
+
+      - name: Preserve successful enrichment from a rejected snapshot
+        if: steps.search.outcome == 'failure'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Preserve transaction enrichment from rejected snapshot"
+          file_pattern: "verification/award_transaction_facts.csv verification/award_period_change_facts.csv consolidated/master_ledger.csv"
+          commit_user_name: GitHub Actions Bot
+          commit_user_email: github-actions-bot@users.noreply.github.com
+          commit_author: GitHub Actions Bot <github-actions-bot@users.noreply.github.com>
+
+      - name: Surface rejected snapshot failure
+        if: steps.search.outcome == 'failure'
+        run: exit 1

@@ -8,6 +8,7 @@ were dropped on every run with no output at all.
 import pandas as pd
 import pytest
 
+import award_transaction_facts as transaction_facts
 import build_master_ledger as bml
 import search as s
 
@@ -60,7 +61,6 @@ class FakeAward:
             "P",
             (),
             {
-                "last_modified_date": "2026-01-01",
                 "start_date": "2025-01-01",
                 "end_date": end_date,
             },
@@ -86,6 +86,7 @@ def make_search(source_rows, awards, ignore=()):
     obj.claims = {}
     obj.unresolved = {}
     obj.ignore_award_ids = list(ignore)
+    obj.window_rejects = []
     obj.awards = awards
     obj.awards_by_id = {a.award_identifier: a for a in awards}
     for name, rows in source_rows.items():
@@ -93,13 +94,21 @@ def make_search(source_rows, awards, ignore=()):
     return obj
 
 
-def row(aid, desc="terminated", status=""):
+def row(aid, desc="terminated", status="", action_date="2025-06-01", basis="evidence"):
+    """One source row. Defaults are in-window so window enforcement is opt-in.
+
+    The tracking-window fields are part of every source's output contract now
+    (contract_query.FINAL_COLUMNS), so a fixture that omits them is not a
+    smaller fixture - it is an invalid one, and the ingest gate says so.
+    """
     return {
         "Award ID": aid,
         "description": desc,
         "status": status,
         "savings": "",
         "claim_date": "",
+        "action_date": action_date,
+        "detection_basis": basis,
     }
 
 
@@ -189,6 +198,91 @@ def test_source_description_normalizes_carriage_returns():
 def test_detection_is_a_snapshot_column():
     """It has to be here or the source's evidence never leaves the query."""
     assert "Detection" in s.SNAPSHOT_COLUMNS
+
+
+def test_one_full_history_supplies_snapshot_and_persisted_facts(workdir):
+    class Txn:
+        def __init__(self, when, mod, code, description):
+            self.action_date = when
+            self.modification_number = mod
+            self.action_type = code
+            self.action_type_description = description
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+            self.all_calls = 0
+
+        def order_by(self, field, direction):
+            assert (field, direction) == ("action_date", "asc")
+            return self
+
+        def page_size(self, size):
+            assert size == transaction_facts.PAGE_SIZE
+            return self
+
+        def limit(self, size):
+            assert size > 10_000
+            return self
+
+        def all(self):
+            self.all_calls += 1
+            return list(self.rows)
+
+    query = Query(
+        [
+            # Deliberately unordered: local ordering must define first/latest.
+            Txn("2025-06-01", "P00004", "B", "CONTINUATION"),
+            Txn("2024-01-01", "0", "A", "NEW"),
+            Txn("2025-03-01", "P00003", "K", "CLOSE OUT"),
+            Txn("2025-02-01", "P00002", "F", "TERMINATE FOR CONVENIENCE"),
+        ]
+    )
+    award = FakeAward("A-1")
+    award.generated_unique_award_id = "CONT_AWD_A-1"
+    award.transactions = query
+
+    obj = make_search({"NPDV": [row("A-1")]}, [award])
+    obj.unique_award_ids = ["A-1"]
+    obj._enrich_transaction_facts()
+    record = obj.unique_cancellations["A-1"]
+    persisted = transaction_facts.load_facts()["A-1"]
+
+    assert query.all_calls == 1
+    assert record["First Action Type"] == "A"
+    assert record["First Action Type Description"] == "NEW"
+    assert record["First Action Date"] == "2024-01-01"
+    assert record["Latest Action Type"] == "B"
+    assert record["Latest Action Type Description"] == "CONTINUATION"
+    assert record["Latest Action Date"] == "2025-06-01"
+    assert record["Latest Modification Number"] == "P00004"
+    assert record["Termination Modification Number"] == "P00002"
+    assert record["Termination Action Date"] == "2025-02-01"
+    assert record["Closeout Modification Number"] == "P00003"
+    assert record["Closeout Action Date"] == "2025-03-01"
+    assert persisted["First Action Type"] == "A"
+    assert persisted["Latest Modification Number"] == "P00004"
+    assert persisted["Termination Modification Number"] == "P00002"
+    assert persisted["Closeout Modification Number"] == "P00003"
+
+
+def test_transaction_fields_are_blank_when_usaspending_returns_no_history():
+    obj = make_search({"NPDV": [row("A-1")]}, [FakeAward("A-1")])
+    record = obj.unique_cancellations["A-1"]
+
+    for column in (
+        "First Action Type",
+        "First Action Type Description",
+        "First Action Date",
+        "Latest Action Type",
+        "Latest Action Type Description",
+        "Latest Action Date",
+        "Termination Modification Number",
+        "Termination Action Date",
+        "Closeout Modification Number",
+        "Closeout Action Date",
+    ):
+        assert record[column] == ""
 
 
 def test_snapshot_carries_each_source_detection_string():
