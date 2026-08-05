@@ -253,9 +253,19 @@ WITH nasa_txn AS (
          ts.transaction_description,
          ts.federal_action_obligation,
          ts.recipient_name,
+         -- Period of performance FIRST, ordering period only as its fallback,
+         -- matching search.py's _award_end_date. USAspending publishes no
+         -- period end for an IDV, so an IDV still resolves to its ordering
+         -- boundary - but an ordinary contract that carries both can no
+         -- longer have a shortened ordering window reported as a shortened
+         -- period of performance. The arms used to be the other way round
+         -- on the argument that ordering_period_end_date is null outside
+         -- IDVs; that premise is asserted nowhere it can be checked, and
+         -- this ordering does not depend on it either way. See
+         -- tests/test_mirror_end_date_premise.py.
          COALESCE(
-             NULLIF(TRIM(ts.ordering_period_end_date), '')::date,
-             ts.period_of_performance_current_end_date
+             ts.period_of_performance_current_end_date,
+             NULLIF(TRIM(ts.ordering_period_end_date), '')::date
          ) AS end_date
   FROM rpt.transaction_search ts
   WHERE ts.awarding_agency_id = 862
@@ -389,10 +399,22 @@ SELECT ts.generated_unique_award_id,
        ts.action_date,
        ts.modification_number,
        -- An IDV reports an ordering-period boundary rather than a period of
-       -- performance; the same preference _award_end_date applies to enriched
-       -- awards in search.py. Applied to every row: ordering_period_end_date is
-       -- an FPDS IDV field and null elsewhere, so the COALESCE is a no-op for
-       -- non-IDVs.
+       -- performance, so one is needed as a fallback for the other.
+       --
+       -- Ordering period FIRST here, unlike Q3_END_DATE_TRUNCATION and
+       -- search.py's _award_end_date, which both prefer the period of
+       -- performance. That is deliberate and NOT a drift to be tidied up:
+       -- this feeds write-once provenance, and the 27 IDV awards already
+       -- resolved were resolved under this rule. Their Initial Reported End
+       -- Date and their Current End Date are therefore the same measure,
+       -- which is what makes End Date Trend meaningful for them. Swapping the
+       -- arms would leave two vintages of provenance in one column and could
+       -- silently compare an ordering boundary against a period end.
+       --
+       -- The precedence only matters for rows carrying both values. Whether
+       -- any exist is unverified - see tests/test_mirror_end_date_premise.py,
+       -- which answers it against a reachable mirror. If none do, this arm
+       -- order is equivalent to the other two and can be aligned with them.
        --
        -- NOT `last_date_to_order`: that is the API's DISPLAY name for this
        -- value (search.py reads it off award.raw) and exists in no table. The

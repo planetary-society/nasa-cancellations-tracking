@@ -204,6 +204,11 @@ LEDGER_COLUMNS = [
     *VERIFIED_TERMINATION_COLUMNS,
     "Start Date",
     "Current End Date",
+    # Which measure Current End Date carries for this row - see search.py's
+    # _award_end_date. Blank on rows whose most recent snapshot predates the
+    # column; it is deliberately not back-inferred from the award category,
+    # because an IDV that does publish a period end uses that instead.
+    "End Date Basis",
     "Initial Reported End Date",
     "Current Obligated Amount",
     "Total Outlays",
@@ -284,6 +289,7 @@ REFRESHED_COLUMNS = (
     *TRANSACTION_HISTORY_COLUMNS,
     "Start Date",
     "Current End Date",
+    "End Date Basis",
     "Current Obligated Amount",
     "Total Outlays",
     "Award or Action Description",

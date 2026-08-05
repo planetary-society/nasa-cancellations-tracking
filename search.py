@@ -91,6 +91,10 @@ SNAPSHOT_COLUMNS = [
     *build_master_ledger.TRANSACTION_HISTORY_COLUMNS,
     "Start Date",
     "Current End Date",
+    # Which measure the column above carries. USAspending publishes no period
+    # of performance for an IDV, so those rows fall back to the ordering-period
+    # boundary - a different thing, in the same column.
+    "End Date Basis",
     "Initial Reported End Date",
     "Current Obligated Amount",
     "Total Outlays",
@@ -123,19 +127,35 @@ def _cell(row, column: str) -> str:
     return _normalize_newlines(str(value)).strip()
 
 
-def _award_end_date(award: Award) -> str:
-    """Return the applicable end date for an award or IDV vehicle.
+PERIOD_OF_PERFORMANCE_BASIS = "period_of_performance"
+IDV_ORDERING_PERIOD_BASIS = "idv_last_date_to_order"
+
+
+def _award_end_date(award: Award) -> tuple[str, str]:
+    """The applicable end date for an award or IDV vehicle, and its basis.
 
     USAspending's IDV search response reports the ordering-period boundary as
     ``Last Date to Order`` while leaving the generic period end absent. Keep
     the regular period end authoritative and use the IDV field only as its
     documented fallback.
+
+    The basis is returned rather than inferred downstream because this is the
+    only place that knows which branch fired. An IDV ordering-period boundary
+    is when orders may no longer be placed, not when work ends, so a column
+    holding both measures is unusable in aggregate unless each row says which
+    one it carries. It cannot be recovered from the award category alone: an
+    IDV that does publish a period end is reported on the same footing as any
+    other award.
     """
     end_date = award.period_of_performance.end_date
-    if not end_date and award.category == "idv":
+    if end_date:
+        return end_date, PERIOD_OF_PERFORMANCE_BASIS
+    if award.category == "idv":
         raw = award.raw or {}
         end_date = raw.get("Last Date to Order") or raw.get("last_date_to_order")
-    return end_date or ""
+        if end_date:
+            return end_date, IDV_ORDERING_PERIOD_BASIS
+    return "", ""
 
 
 def _history_key(award: Award) -> str:
@@ -620,7 +640,7 @@ class Search:
         # The basis vocabulary is validated per source in _enforce_declared_window,
         # so by here it can only be one of DETECTION_BASES.
         if _cell(row, "detection_basis") == "inference":
-            end_date = _award_end_date(award)
+            end_date, _basis = _award_end_date(award)
             if not in_window(end_date):
                 self._reject(
                     source,
@@ -1042,6 +1062,7 @@ class Search:
                 # read as a table against SNAPSHOT_COLUMNS, and wrapped entries
                 # are what make a misplaced field hard to spot.
                 district = congressional_district(award.recipient.location)
+                end_date, end_date_basis = _award_end_date(award)
                 description = original_description or award.description
                 categories = ", ".join(award.recipient.business_types)
                 url = canonical_usaspending_url(award.usa_spending_url)
@@ -1063,7 +1084,8 @@ class Search:
                     # disagree about a transaction-derived column.
                     **transaction_facts.history_columns(history_facts),
                     "Start Date": award.period_of_performance.start_date,
-                    "Current End Date": _award_end_date(award),
+                    "Current End Date": end_date,
+                    "End Date Basis": end_date_basis,
                     # Derived independently of which source won this snapshot
                     # row, so a DOGE/NPDV row can retain USAspending history.
                     "Initial Reported End Date": initial_end,
