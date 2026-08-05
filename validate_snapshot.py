@@ -28,7 +28,8 @@ import shutil
 from collections import Counter
 from datetime import datetime
 
-from contract_query import load_snapshot, read_rows
+from contract_query import load_snapshot
+from utils import read_rows
 
 MAX_ROW_DROP = 3  # max net rows lost vs. previous snapshot before quarantine
 DISAPPEARANCE_LOG = os.path.join("verification", "disappearance_log.csv")
@@ -46,7 +47,7 @@ def load_reviewed_removals(path=REVIEWED_REMOVALS_PATH):
         return set()
     return {
         row["Award ID"]
-        for row in read_rows(path, encoding="utf-8-sig")[1]
+        for row in read_rows(path)
         if row.get("Award ID") and row.get("Status") == "excluded_by_design"
     }
 

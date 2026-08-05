@@ -58,10 +58,10 @@ from datetime import date
 
 import award_transaction_facts
 import initial_end_dates
-from contract_query import load_snapshot, read_rows
+from contract_query import load_snapshot
 from detection_methods import DETECTION_METHODS, infer_snapshot_method
 from termination_vocabulary import is_cause, is_reversal, is_vacatur
-from utils import canonical_usaspending_url
+from utils import canonical_usaspending_url, read_rows
 
 CONSOLIDATED_DIR = "consolidated"
 LEDGER_PATH = os.path.join(CONSOLIDATED_DIR, "master_ledger.csv")
@@ -495,44 +495,30 @@ def load_auto_verification():
     return load_snapshot(AUTO_VERIFICATION_PATH)
 
 
-def load_initial_end_dates():
+def load_initial_end_dates(path=INITIAL_END_DATES_PATH):
     """Validated Initial Reported End Date provenance, keyed by Award ID."""
-    if not os.path.exists(INITIAL_END_DATES_PATH):
+    if not os.path.exists(path):
         return {}
 
-    names, raw_rows = read_rows(INITIAL_END_DATES_PATH, encoding="utf-8")
-    missing = set(INITIAL_END_DATE_COLUMNS) - set(names)
-    if missing:
-        raise RuntimeError(
-            f"{INITIAL_END_DATES_PATH} is missing column(s): "
-            f"{', '.join(sorted(missing))}"
-        )
     rows = {}
-    for row in raw_rows:
+    for row in read_rows(path, columns=INITIAL_END_DATE_COLUMNS):
         aid = (row.get("Award ID") or "").strip()
         if not aid:
-            raise RuntimeError(f"{INITIAL_END_DATES_PATH} contains a blank Award ID")
+            raise RuntimeError(f"{path} contains a blank Award ID")
         if aid in rows:
-            raise RuntimeError(
-                f"{INITIAL_END_DATES_PATH} contains duplicate Award ID {aid!r}"
-            )
+            raise RuntimeError(f"{path} contains duplicate Award ID {aid!r}")
         status = (row.get("Lookup Status") or "").strip()
         if status not in INITIAL_END_DATE_STATUSES:
-            raise RuntimeError(
-                f"{INITIAL_END_DATES_PATH} has invalid Lookup Status "
-                f"{status!r} for {aid}"
-            )
+            raise RuntimeError(f"{path} has invalid Lookup Status {status!r} for {aid}")
         initial = (row.get("Initial Reported End Date") or "").strip()
         if status == "resolved" and not initial:
-            raise RuntimeError(
-                f"{INITIAL_END_DATES_PATH} marks {aid} resolved without a date"
-            )
+            raise RuntimeError(f"{path} marks {aid} resolved without a date")
         if initial:
             try:
                 date.fromisoformat(initial)
             except ValueError as exc:
                 raise RuntimeError(
-                    f"{INITIAL_END_DATES_PATH} has invalid date {initial!r} for {aid}"
+                    f"{path} has invalid date {initial!r} for {aid}"
                 ) from exc
         rows[aid] = dict(row)
     return rows
@@ -561,7 +547,7 @@ def load_verification(ledger=None):
         )
 
     if os.path.exists(VERIFICATION_PATH):
-        for r in read_rows(VERIFICATION_PATH, encoding="utf-8")[1]:
+        for r in read_rows(VERIFICATION_PATH):
             overrides[r["Award ID"]] = (r["Status"], r["Evidence"])
     return overrides
 
@@ -620,7 +606,7 @@ def build(update_only=False):
     ledger = {}
     latest_claim = {}  # award id -> most recently seen claim values
     if update_only and os.path.exists(LEDGER_PATH):
-        for r in read_rows(LEDGER_PATH, encoding="utf-8")[1]:
+        for r in read_rows(LEDGER_PATH):
             ledger[r["Award ID"]] = dict(r)
             # Reseed from what was already recorded, so a claim revised on
             # an earlier day is not appended again on every later run.

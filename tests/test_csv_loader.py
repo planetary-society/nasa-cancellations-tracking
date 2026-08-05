@@ -1,33 +1,32 @@
 """The shared CSV read contract.
 
-Every reader of a repo-owned CSV goes through `contract_query.read_rows`, so
-this is where a stored header is translated into the vocabulary the code uses.
-These tests pin that translation, because the failure mode it guards against is
+Every reader of a repo-owned CSV goes through `utils.read_rows`, so this is
+where a stored header is translated into the vocabulary the code uses. These
+tests pin that translation, because the failure mode it guards against is
 silent: a reader that keeps using a stored name gets `None` from `row.get()`
 rather than an error, and a guard built on that comparison quietly stops
 guarding.
 """
 
-import glob
 import os
 
 import pytest
 
-from contract_query import load_snapshot, read_rows
+import build_master_ledger
+import search
+from contract_query import load_snapshot
+from utils import read_header, read_rows
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def test_read_rows_returns_stored_header_when_no_aliases(tmp_path, write_csv):
+def test_read_rows_returns_rows_keyed_by_stored_header(tmp_path, write_csv):
     path = str(tmp_path / "snap.csv")
     write_csv(
         path, ["Award ID", "End Date"], [{"Award ID": "A-1", "End Date": "2026-01-01"}]
     )
 
-    names, rows = read_rows(path)
-
-    assert names == ["Award ID", "End Date"]
-    assert rows == [{"Award ID": "A-1", "End Date": "2026-01-01"}]
+    assert read_rows(path) == [{"Award ID": "A-1", "End Date": "2026-01-01"}]
 
 
 def test_aliases_rekey_rows_not_just_the_header(tmp_path, write_csv):
@@ -37,9 +36,8 @@ def test_aliases_rekey_rows_not_just_the_header(tmp_path, write_csv):
         path, ["Award ID", "End Date"], [{"Award ID": "A-1", "End Date": "2026-01-01"}]
     )
 
-    names, rows = read_rows(path, aliases={"End Date": "Current End Date"})
+    rows = read_rows(path, aliases={"End Date": "Current End Date"})
 
-    assert names == ["Award ID", "Current End Date"]
     assert rows[0]["Current End Date"] == "2026-01-01"
     assert "End Date" not in rows[0]
 
@@ -48,22 +46,19 @@ def test_unmapped_columns_pass_through(tmp_path, write_csv):
     path = str(tmp_path / "snap.csv")
     write_csv(path, ["Award ID", "Recipient"], [{"Award ID": "A-1", "Recipient": "X"}])
 
-    names, rows = read_rows(path, aliases={"End Date": "Current End Date"})
+    rows = read_rows(path, aliases={"End Date": "Current End Date"})
 
-    assert names == ["Award ID", "Recipient"]
     assert rows[0]["Recipient"] == "X"
 
 
-def test_alias_map_is_idempotent(tmp_path, write_csv):
-    """Applying the map to an already-current header must be a no-op.
+def test_applying_aliases_to_an_already_migrated_file_is_a_no_op(tmp_path, write_csv):
+    """Producers rewrite their own files, so the map meets migrated headers.
 
-    Ledger and sidecar files are rewritten in place by their producers, so the
-    same map is applied to files that have already been migrated. If a new name
-    were itself a key in the map, a second pass would rename it again.
+    Reading a file that already carries the current vocabulary must leave it
+    alone. This holds as long as no new name is itself a key in the map, which
+    is asserted directly of the real table wherever one is defined.
     """
-    aliases = {"End Date": "Current End Date", "Sources": "Flagged By"}
-    assert not set(aliases.values()) & set(aliases)
-
+    aliases = {"End Date": "Current End Date"}
     path = str(tmp_path / "snap.csv")
     write_csv(
         path,
@@ -71,10 +66,7 @@ def test_alias_map_is_idempotent(tmp_path, write_csv):
         [{"Award ID": "A-1", "Current End Date": "2026-01-01"}],
     )
 
-    names, rows = read_rows(path, aliases=aliases)
-
-    assert names == ["Award ID", "Current End Date"]
-    assert rows[0]["Current End Date"] == "2026-01-01"
+    assert read_rows(path, aliases=aliases) == read_rows(path)
 
 
 def test_collapsing_two_columns_onto_one_raises(tmp_path, write_csv):
@@ -91,7 +83,7 @@ def test_collapsing_two_columns_onto_one_raises(tmp_path, write_csv):
         [{"Verified Date": "2026-01-01", "Auto Verified Date": "2026-02-02"}],
     )
 
-    with pytest.raises(RuntimeError, match="collapses distinct columns"):
+    with pytest.raises(RuntimeError, match="duplicate column name"):
         read_rows(
             path,
             aliases={
@@ -99,6 +91,35 @@ def test_collapsing_two_columns_onto_one_raises(tmp_path, write_csv):
                 "Auto Verified Date": "Automated Verdict Date",
             },
         )
+
+
+def test_required_columns_are_checked(tmp_path, write_csv):
+    path = str(tmp_path / "sidecar.csv")
+    write_csv(path, ["Award ID"], [{"Award ID": "A-1"}])
+
+    with pytest.raises(RuntimeError, match="missing column"):
+        read_rows(path, columns=["Award ID", "Last Checked Date"])
+
+
+def test_exact_columns_rejects_reordering(tmp_path, write_csv):
+    """One sidecar pins column order, so a reordered header must not pass."""
+    path = str(tmp_path / "sidecar.csv")
+    write_csv(path, ["Action Date", "Award ID"], [{"Award ID": "A-1"}])
+
+    with pytest.raises(RuntimeError, match="expected"):
+        read_rows(path, columns=["Award ID", "Action Date"], exact_columns=True)
+
+
+def test_a_byte_order_mark_does_not_change_the_first_column_name(tmp_path):
+    """dropped_award_status.csv is hand-edited; an editor may add a BOM.
+
+    It was previously read as utf-8 in build_master_ledger and utf-8-sig in
+    validate_snapshot, so the same file parsed two different ways.
+    """
+    path = tmp_path / "human.csv"
+    path.write_text("﻿Award ID,Status\nA-1,excluded_by_design\n", encoding="utf-8")
+
+    assert read_rows(str(path)) == [{"Award ID": "A-1", "Status": "excluded_by_design"}]
 
 
 def test_load_snapshot_forwards_aliases_and_skips_blank_ids(tmp_path, write_csv):
@@ -115,50 +136,33 @@ def test_load_snapshot_forwards_aliases_and_skips_blank_ids(tmp_path, write_csv)
     assert snap["A-1"]["Flagged By"] == "DOGE"
 
 
-def test_archived_snapshot_header_generations_are_known():
-    """Every archived snapshot must match a header generation we know about.
+def test_every_replayed_snapshot_uses_known_column_names():
+    """No archived snapshot may carry a column the code does not know about.
 
-    A full ledger rebuild replays every file in consolidated/, so an unknown
-    header generation is exactly the thing that would need an alias entry. This
-    fails loudly when one appears rather than letting the rebuild read blanks.
+    A full rebuild replays every file `snapshot_files()` returns, so an unknown
+    column is exactly what would need an alias entry. Asserted against the
+    code's own column list rather than transcribed headers, so adding a column
+    to SNAPSHOT_COLUMNS does not require editing this test - only a genuinely
+    unrecognised name fails.
+
+    Column *sets*, not ordered headers: read_rows keys rows by name, so column
+    order is not something the loader can get wrong.
     """
-    known = {
-        # Original shape.
-        "Source,District,Recipient,Award ID,Latest Modification Number,"
-        "Latest Modification Date,Start Date,End Date,Award Amount,Total Outlays,"
-        "Description,Business Categories,URL",
-        # Claim columns added.
-        "Source,District,Recipient,Award ID,Latest Modification Number,"
-        "Latest Modification Date,Start Date,End Date,Award Amount,Total Outlays,"
-        "Description,Business Categories,URL,Claiming Source,Claimed Status,"
-        "Claimed Savings,Claim Date",
-        # Latest Modification Date replaced by the transaction-history group,
-        # plus Detection.
-        "Source,District,Recipient,Award ID,Latest Modification Number,"
-        "First Action Type,First Action Type Description,First Action Date,"
-        "Latest Action Type,Latest Action Type Description,Latest Action Date,"
-        "Termination Modification Number,Termination Action Date,"
-        "Closeout Modification Number,Closeout Action Date,Start Date,End Date,"
-        "Initial Reported End Date,Award Amount,Total Outlays,Description,"
-        "Detection,Business Categories,URL,Claiming Source,Claimed Status,"
-        "Claimed Savings,Claim Date",
+    known = set(search.SNAPSHOT_COLUMNS) | {
+        # Removed in favour of the Latest Action Date pairing; still present in
+        # the 398 snapshots archived before that change.
+        "Latest Modification Date",
     }
 
-    pattern = os.path.join(
-        REPO_ROOT, "consolidated", "nasa_contract_cancellations_*.csv"
-    )
-    paths = sorted(glob.glob(pattern))
+    cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        paths = [path for _, path in build_master_ledger.snapshot_files()]
+    finally:
+        os.chdir(cwd)
     if not paths:
         pytest.skip("no archived snapshots checked out")
 
-    unknown = {}
     for path in paths:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            header = fh.readline().strip().lstrip("﻿")
-        if header not in known:
-            unknown.setdefault(header, []).append(os.path.basename(path))
-
-    assert not unknown, "unrecognised snapshot header generation(s): " + "; ".join(
-        f"{files[0]} (+{len(files) - 1} more): {header}"
-        for header, files in unknown.items()
-    )
+        unknown = set(read_header(path)) - known
+        assert not unknown, f"{os.path.basename(path)} has unknown column(s): {unknown}"

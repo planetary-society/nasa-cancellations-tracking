@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import tempfile
+from collections import Counter
 from decimal import Decimal
 
 from titlecase import titlecase
@@ -409,6 +410,66 @@ def format_as_currency(amount: int) -> str:
     formatted_string = f"${amount_decimal:,.2f}"
 
     return formatted_string
+
+
+def read_header(path: str) -> list[str]:
+    """The stored column names of a repo-owned CSV, before any aliasing."""
+    with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
+        return list(csv.DictReader(fh).fieldnames or [])
+
+
+def read_rows(
+    path: str,
+    *,
+    aliases: dict[str, str] | None = None,
+    columns=None,
+    exact_columns: bool = False,
+    errors: str | None = None,
+) -> list[dict]:
+    """Read a repo-owned CSV into rows, translating the stored header.
+
+    The read counterpart to write_sidecar_csv, and the single point at which a
+    stored column name becomes the name the code uses. `aliases` maps an
+    on-disk name to the current one and is applied to `reader.fieldnames`
+    *before* the rows are read, which is what makes DictReader key every row by
+    the current name - no caller sees, or has to rewrite, a stored name.
+
+    `columns` asserts the header carries what the caller needs: by default that
+    every named column is present, or with `exact_columns` that the header is
+    exactly this list in this order.
+
+    Always decodes as utf-8-sig. That is identical to utf-8 for a file without
+    a byte-order mark and tolerant of one with it, so whether a human's editor
+    wrote a BOM stops being a per-caller decision - dropped_award_status.csv is
+    hand-edited and was previously read as utf-8 here and utf-8-sig elsewhere.
+    """
+    with open(path, newline="", encoding="utf-8-sig", errors=errors) as fh:
+        reader = csv.DictReader(fh)
+        names = list(reader.fieldnames or [])
+        if aliases:
+            names = [aliases.get(name, name) for name in names]
+        duplicates = {name for name, count in Counter(names).items() if count > 1}
+        if duplicates:
+            raise RuntimeError(
+                f"{path} has duplicate column name(s) "
+                f"{', '.join(sorted(duplicates))}; rows would silently lose data."
+            )
+        if columns is not None:
+            if exact_columns:
+                if names != list(columns):
+                    raise RuntimeError(
+                        f"{path} has columns {names}; expected {list(columns)}"
+                    )
+            else:
+                missing = set(columns) - set(names)
+                if missing:
+                    raise RuntimeError(
+                        f"{path} is missing column(s): {', '.join(sorted(missing))}"
+                    )
+        # DictReader keys rows off this attribute, so assigning it before
+        # iteration is what renames the columns.
+        reader.fieldnames = names
+        return list(reader)
 
 
 def write_sidecar_csv(path: str, fieldnames, rows: dict[str, dict]) -> None:

@@ -14,8 +14,8 @@ import sys
 from dataclasses import dataclass
 from datetime import date
 
-from contract_query import read_rows
-from utils import natural_modification_key, write_sidecar_csv
+
+from utils import natural_modification_key, read_rows, write_sidecar_csv
 
 PAGE_SIZE = 5000
 SIDECAR_PATH = os.path.join("verification", "award_transaction_facts.csv")
@@ -241,12 +241,8 @@ def load_facts(path: str = SIDECAR_PATH) -> dict[str, dict]:
     """Load and strictly validate the machine-owned sidecar."""
     if not os.path.exists(path):
         return {}
-    names, raw_rows = read_rows(path, encoding="utf-8")
-    missing = set(SIDECAR_COLUMNS) - set(names)
-    if missing:
-        raise RuntimeError(f"{path} is missing column(s): {', '.join(sorted(missing))}")
     rows = {}
-    for row in raw_rows:
+    for row in read_rows(path, columns=SIDECAR_COLUMNS):
         aid = (row.get("Award ID") or "").strip()
         if not aid:
             raise RuntimeError(f"{path} contains a blank Award ID")

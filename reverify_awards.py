@@ -61,7 +61,7 @@ from build_master_ledger import (
     VERIFICATION_PATH,
     load_auto_verification,
 )
-from contract_query import load_snapshot, read_rows
+from contract_query import load_snapshot
 from termination_vocabulary import (
     CLOSEOUT_TEXT,
     is_cause,
@@ -70,7 +70,7 @@ from termination_vocabulary import (
     is_termination,
     is_vacatur,
 )
-from utils import canonical_generated_award_id
+from utils import canonical_generated_award_id, read_rows
 
 RUN_LOG_PATH = os.path.join("verification", "reverify_runs.csv")
 
@@ -367,10 +367,7 @@ def classify_transactions(txns, *, is_contract, ledger_row):
 def load_human_verdicts():
     if not os.path.exists(VERIFICATION_PATH):
         return {}
-    return {
-        r["Award ID"]: r["Status"]
-        for r in read_rows(VERIFICATION_PATH, encoding="utf-8")[1]
-    }
+    return {r["Award ID"]: r["Status"] for r in read_rows(VERIFICATION_PATH)}
 
 
 def select_awards(ledger, previous, *, stale_days, include_excluded, only=None):

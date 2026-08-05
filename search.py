@@ -12,12 +12,7 @@ from usaspending.exceptions import USASpendingError
 import award_period_change_facts
 import award_transaction_facts as transaction_facts
 import build_master_ledger
-from contract_query import (
-    csv_files_equal,
-    find_most_recent_csv,
-    read_rows,
-    validate_source_frame,
-)
+from contract_query import csv_files_equal, find_most_recent_csv, validate_source_frame
 from doge_search import DOGEQuery
 from initial_end_dates import (
     TRANSIENT_STATUSES,
@@ -37,6 +32,7 @@ from utils import (
     canonical_generated_award_id,
     canonical_usaspending_url,
     is_generated_award_id,
+    read_rows,
     write_sidecar_csv,
 )
 from validate_snapshot import validate
@@ -506,17 +502,15 @@ class Search:
         """(award id, generated award id) for every award in the stored ledger.
 
         Both sidecars backfill ledger-only awards using the same extraction, so
-        it lives here rather than being restated per sidecar, and the file is
-        parsed once per run instead of once per caller. Returns [] when no
-        ledger exists yet, which is the first-run case.
+        it lives here rather than being restated per sidecar, and the memo
+        keeps it to one parse across its callers. Returns [] when no ledger
+        exists yet, which is the first-run case.
         """
         cache = getattr(self, "_ledger_award_ids", None)
         if cache is None:
             cache = []
             if os.path.exists(build_master_ledger.LEDGER_PATH):
-                for row in read_rows(build_master_ledger.LEDGER_PATH, encoding="utf-8")[
-                    1
-                ]:
+                for row in read_rows(build_master_ledger.LEDGER_PATH):
                     aid = (row.get("Award ID") or "").strip()
                     if aid:
                         cache.append(
@@ -920,7 +914,7 @@ class Search:
         """Ledger rows whose status means 'nobody has explained this yet'."""
         if not os.path.exists(build_master_ledger.LEDGER_PATH):
             return
-        rows = read_rows(build_master_ledger.LEDGER_PATH, encoding="utf-8")[1]
+        rows = read_rows(build_master_ledger.LEDGER_PATH)
 
         pending = [r for r in rows if r["Status"] in UNEXPLAINED_STATUSES]
         if pending:
