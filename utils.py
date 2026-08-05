@@ -8,6 +8,8 @@ from decimal import Decimal
 
 from titlecase import titlecase
 
+import csv_aliases
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -429,10 +431,16 @@ def read_rows(
     """Read a repo-owned CSV into rows, translating the stored header.
 
     The read counterpart to write_sidecar_csv, and the single point at which a
-    stored column name becomes the name the code uses. `aliases` maps an
-    on-disk name to the current one and is applied to `reader.fieldnames`
-    *before* the rows are read, which is what makes DictReader key every row by
-    the current name - no caller sees, or has to rewrite, a stored name.
+    stored column name becomes the name the code uses. The translation is
+    applied to `reader.fieldnames` *before* the rows are read, which is what
+    makes DictReader key every row by the current name - no caller sees, or has
+    to rewrite, a stored name.
+
+    Which translation applies is resolved from the path (see csv_aliases), so
+    a caller cannot read a file with the wrong table or forget one. Omitting it
+    would not raise: an un-aliased read returns stored keys, `row.get()`
+    returns None, and whatever was checking that value stops checking it. Pass
+    `aliases={}` to read a header exactly as stored.
 
     `columns` asserts the header carries what the caller needs: by default that
     every named column is present, or with `exact_columns` that the header is
@@ -443,6 +451,8 @@ def read_rows(
     wrote a BOM stops being a per-caller decision - dropped_award_status.csv is
     hand-edited and was previously read as utf-8 here and utf-8-sig elsewhere.
     """
+    if aliases is None:
+        aliases = csv_aliases.aliases_for(path)
     with open(path, newline="", encoding="utf-8-sig", errors=errors) as fh:
         reader = csv.DictReader(fh)
         names = list(reader.fieldnames or [])

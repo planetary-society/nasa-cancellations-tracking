@@ -13,6 +13,7 @@ import os
 import pytest
 
 import build_master_ledger
+import csv_aliases
 import search
 from contract_query import load_snapshot
 from utils import read_header, read_rows
@@ -137,22 +138,27 @@ def test_load_snapshot_forwards_aliases_and_skips_blank_ids(tmp_path, write_csv)
 
 
 def test_every_replayed_snapshot_uses_known_column_names():
-    """No archived snapshot may carry a column the code does not know about.
+    """No archived snapshot may carry a column the code cannot account for.
 
-    A full rebuild replays every file `snapshot_files()` returns, so an unknown
-    column is exactly what would need an alias entry. Asserted against the
-    code's own column list rather than transcribed headers, so adding a column
-    to SNAPSHOT_COLUMNS does not require editing this test - only a genuinely
-    unrecognised name fails.
+    A full rebuild replays every file `snapshot_files()` returns, so a stored
+    name that is neither current nor translated is one the rebuild reads as a
+    column nothing looks at. Asserted against the code's own lists rather than
+    transcribed headers, so adding a column to SNAPSHOT_COLUMNS or an entry to
+    the alias table does not require editing this test.
 
     Column *sets*, not ordered headers: read_rows keys rows by name, so column
     order is not something the loader can get wrong.
     """
-    known = set(search.SNAPSHOT_COLUMNS) | {
-        # Removed in favour of the Latest Action Date pairing; still present in
-        # the 398 snapshots archived before that change.
-        "Latest Modification Date",
-    }
+    known = (
+        set(search.SNAPSHOT_COLUMNS)
+        | set(csv_aliases.SNAPSHOT)
+        | {
+            # Removed in favour of the Latest Action Date pairing; still
+            # present in the 398 snapshots archived before that change, and
+            # deliberately not aliased - nothing reads it.
+            "Latest Modification Date",
+        }
+    )
 
     cwd = os.getcwd()
     os.chdir(REPO_ROOT)
