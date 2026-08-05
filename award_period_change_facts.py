@@ -7,7 +7,6 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from award_period import SHORTENING_MIN_DAYS, significant_shortening
-
 from tracking_window import TRACKING_WINDOW_START_DATE, as_date
 from utils import natural_modification_key, read_rows
 

@@ -663,10 +663,8 @@ class USASpendingTerminationsQuery(ContractQuery):
             )
 
         df = pd.DataFrame(records, columns=self.final_columns)
-        print(
-            f"{sources.USASPENDING_TERMINATIONS}: {len(df)} unique awards",
-            file=sys.stderr,
-        )
+        label = sources.USASPENDING_TERMINATIONS
+        print(f"{label}: {len(df)} unique awards", file=sys.stderr)
         self.export_to_csv(df, "usaspending_terminations_query")
         return df
 

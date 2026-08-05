@@ -66,7 +66,7 @@ SOURCES = {
 # tracked, so it is recorded even when the award turns out to have merely
 # expired or grown - and it is attached to the consolidated row regardless of
 # which source won that row (see _build_claim_index).
-CLAIM_SOURCES = sources.CLAIM_SOURCES
+CLAIM_SOURCES = frozenset({sources.DOGE})
 
 # Ledger statuses that mean "left the snapshot and nobody has said why yet".
 # Everything else is either currently flagged, adjudicated, or excluded on

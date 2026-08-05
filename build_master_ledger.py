@@ -58,17 +58,8 @@ from datetime import date
 
 import award_transaction_facts
 import initial_end_dates
+import sources
 from contract_query import load_snapshot
-from sources import (
-    DOGE,
-    FPDS,
-    NASA_GRANTS,
-    NPDV,
-    SOURCE_COLUMN,
-    SOURCES_COLUMN,
-    add_source,
-    has_source,
-)
 from detection_methods import DETECTION_METHODS, infer_snapshot_method
 from termination_vocabulary import is_cause, is_reversal, is_vacatur
 from utils import canonical_usaspending_url, read_rows
@@ -150,7 +141,7 @@ FPDS_LAST_GOOD_DATE = "2026-02-24"  # last snapshot before ezsearch retirement
 # Only that source on that date is skipped. The 23 awards NASAGrants flagged
 # that day which also appear on other dates keep their genuine observations.
 EXPERIMENT_DATE = "2026-01-08"
-EXPERIMENT_SOURCE = NASA_GRANTS
+EXPERIMENT_SOURCE = sources.NASA_GRANTS
 
 # The transaction-derived provenance group: what the award's own USAspending
 # transaction history says was done to it, and when. Declared once and splatted
@@ -164,7 +155,7 @@ LEDGER_COLUMNS = [
     "Award ID",
     "Recipient",
     "District",
-    SOURCES_COLUMN,
+    sources.SOURCES_COLUMN,
     "First Seen",
     "Last Seen",
     "Status",
@@ -342,7 +333,7 @@ def parse_claim_from_description(desc):
     savings = re.search(r"Reported savings:\s*\$([\d,]+(?:\.\d+)?)", desc)
     claim_date = re.search(r"DOGE Action Date:\s*([\d/\-]+)", desc)
     return {
-        "Claiming Source": DOGE,
+        "Claiming Source": sources.DOGE,
         "Claimed Status": status.group(1).strip() if status else "",
         "Claimed Savings": normalize_savings(savings.group(1)) if savings else "",
         "Claim Date": claim_date.group(1).strip() if claim_date else "",
@@ -494,8 +485,8 @@ def is_degraded(rows):
     On those days ~18 NPDV awards are misattributed to NASAGrants and ~27
     disappear; treating them as real observations corrupts source history.
     """
-    sources = {r.get(SOURCE_COLUMN, "") for r in rows.values()}
-    return NPDV not in sources and len(rows) > 0
+    observed = {r.get("Source", "") for r in rows.values()}
+    return bool(rows) and not sources.REQUIRED_SOURCES <= observed
 
 
 def load_auto_verification():
@@ -594,7 +585,10 @@ def classify(aid, rec, desc_history):
         )
     # No branch for the 2026-01-08 grants experiment: those rows are dropped at
     # ingest (see EXPERIMENT_DATE), so no award can reach here because of it.
-    if has_source(rec, FPDS) and rec["Last Seen"] == FPDS_LAST_GOOD_DATE:
+    if (
+        sources.has_source(rec, sources.FPDS)
+        and rec["Last Seen"] == FPDS_LAST_GOOD_DATE
+    ):
         return (
             "source_retired",
             "FPDS ezsearch retired 2026-02-25 (fpds.gov now redirects to SAM.gov); "
@@ -655,7 +649,7 @@ def build(update_only=False):
             if rec is None:
                 rec = {
                     "Award ID": aid,
-                    SOURCES_COLUMN: row.get(SOURCE_COLUMN, ""),
+                    sources.SOURCES_COLUMN: row.get("Source", ""),
                     "First Seen": date_str,
                     "Last Seen": date_str,
                     "Status": "",
@@ -670,7 +664,7 @@ def build(update_only=False):
                 ledger[aid] = rec
             else:
                 rec["Last Seen"] = max(rec["Last Seen"], date_str)
-                add_source(rec, row.get(SOURCE_COLUMN, ""))
+                sources.add_source(rec, row.get("Source", ""))
                 for col in REFRESHED_COLUMNS:
                     if row.get(col):
                         rec[col] = row[col]
@@ -760,7 +754,7 @@ def build(update_only=False):
         print(f"  {status}: {n}")
     if skipped:
         print(
-            f"  Skipped {len(skipped)} degraded snapshots (NPDV source absent): {', '.join(skipped)}"
+            f"  Skipped {len(skipped)} degraded snapshots (missing {sorted(sources.REQUIRED_SOURCES)}): {', '.join(skipped)}"
         )
     if ignored_experiment:
         print(

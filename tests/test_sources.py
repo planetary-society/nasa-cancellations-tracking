@@ -20,18 +20,17 @@ def test_sources_of_handles_absent_empty_and_single():
     assert sources.sources_of({"Sources": "DOGE"}) == ["DOGE"]
 
 
-def test_has_source_is_not_a_substring_test():
-    """`"FPDS" in rec["Sources"]` was true for any label containing "FPDS".
+def test_has_source_does_not_match_a_label_that_merely_contains_another():
+    """classify() used `"FPDS" in rec["Sources"]`, a substring test.
 
-    Nothing was misclassified by it, because no current label contains
-    another's name - but that is a property of today's six labels, not of the
-    check, and the whole point of naming them in one place is to be able to
-    change them.
+    Nothing is misclassified by it today, because no current label contains
+    another's name - but that is a property of the six labels, not of the
+    check, and the point of naming them in one place is to be able to change
+    them.
     """
-    rec = {"Sources": "LegacyFPDSMirror"}
+    rec = {"Sources": f"Legacy{sources.FPDS}Mirror"}
 
-    assert "FPDS" in rec["Sources"]  # what the old check asked
-    assert not sources.has_source(rec, sources.FPDS)  # what it meant to ask
+    assert not sources.has_source(rec, sources.FPDS)
 
 
 def test_has_source_matches_whole_labels():
@@ -69,18 +68,16 @@ def test_add_source_ignores_a_blank_name():
     assert rec["Sources"] == "NPDV"
 
 
-def test_every_query_source_has_a_detection_fallback():
-    """A new source must declare what its legacy snapshots imply.
+def test_a_snapshot_without_a_required_source_is_degraded():
+    """The NPDV row every synthetic snapshot carries is not decoration.
 
-    detection_methods back-fills Primary Detection Method from the source alone
-    for rows archived before the structured field existed. A source missing
-    from that table silently degrades to LEGACY_SOURCE_SIGNAL.
+    is_degraded() discards a whole snapshot when a whole-corpus source is
+    absent, on the grounds that the fetch failed rather than that nothing was
+    found. Naming the set is what keeps that invariant findable.
     """
-    import detection_methods
-    import search
+    healthy = {"A-1": {"Source": sources.NPDV}, "A-2": {"Source": sources.DOGE}}
+    broken = {"A-2": {"Source": sources.DOGE}}
 
-    assert set(search.SOURCES) <= set(detection_methods._SOURCE_FALLBACKS)
-
-
-def test_experiment_source_is_a_real_source():
-    assert build_master_ledger.EXPERIMENT_SOURCE in sources.ALL_SOURCES
+    assert not build_master_ledger.is_degraded(healthy)
+    assert build_master_ledger.is_degraded(broken)
+    assert not build_master_ledger.is_degraded({})

@@ -43,6 +43,9 @@ def test_local_mirror_output_names_a_pure_pop_change():
 
 
 def test_historical_snapshot_methods_are_backfilled_for_every_source():
+    # Literal on purpose: deriving these from dm._SOURCE_FALLBACKS would assert
+    # the table against itself. The coverage check below is the part that must
+    # track the code.
     cases = {
         "DOGE": dm.EXTERNAL_CLAIM,
         "NPDV": dm.DESCRIPTION_KEYWORD,
@@ -55,6 +58,19 @@ def test_historical_snapshot_methods_are_backfilled_for_every_source():
     assert {
         source: dm.infer_snapshot_method({"Source": source}) for source in cases
     } == cases
+
+
+def test_every_live_source_declares_what_its_legacy_snapshots_imply():
+    """A seventh source must not silently degrade to LEGACY_SOURCE_SIGNAL.
+
+    Snapshots archived before Primary Detection Method existed are back-filled
+    from the source name alone, so a source with no entry in the fallback table
+    produces rows that say only "some source found this".
+    """
+    import search
+
+    for source in search.SOURCES:
+        assert dm.infer_snapshot_method({"Source": source}) != dm.LEGACY_SOURCE_SIGNAL
 
 
 def test_detection_text_recovers_a_precise_method_before_legacy_fallback():

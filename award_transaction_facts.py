@@ -14,7 +14,6 @@ import sys
 from dataclasses import dataclass
 from datetime import date
 
-
 from utils import natural_modification_key, read_rows, write_sidecar_csv
 
 PAGE_SIZE = 5000

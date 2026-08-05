@@ -93,11 +93,12 @@ def infer_snapshot_method(row: dict) -> str:
     if "end date shortened" in detection or "end date truncated" in detection:
         return POP_END_DATE_CHANGE
 
-    source = str(row.get(sources.SOURCE_COLUMN) or "").strip()
+    source = str(row.get("Source") or "").strip()
     if not source:
         # Ledger rows accumulate Sources while snapshots carry one Source, so
         # which key is present is what tells the two apart. This is only a
         # last-resort fallback: normal rebuilds infer from each snapshot before
         # the sources are collapsed into ledger history.
-        source = next(reversed(sources.sources_of(row)), "")
+        flagged = sources.sources_of(row)
+        source = flagged[-1] if flagged else ""
     return _SOURCE_FALLBACKS.get(source, LEGACY_SOURCE_SIGNAL)
