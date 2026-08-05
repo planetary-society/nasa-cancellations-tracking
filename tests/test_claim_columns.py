@@ -326,6 +326,24 @@ def test_parse_claim_revisions_reads_back_what_record_claim_wrote():
     assert bml.parse_claim_revisions("") == {}
 
 
+def test_parse_claim_revisions_still_reads_a_pre_rename_value():
+    """This cell holds a column NAME inside its value, so a rename reaches it.
+
+    csv_aliases translates headers; it cannot reach inside a cell. Without
+    translating here too, an incremental build over a ledger written before the
+    rename would silently discard the award's revision history and re-append
+    revisions that were already recorded - in the published artifact, with no
+    error. A full rebuild regenerates these values, which is exactly why the
+    gap only shows on the incremental path.
+    """
+    legacy = "2025-05-04 Claimed Status=TERMINATED; 2025-06-01 Claimed Savings=1000.00"
+
+    assert bml.parse_claim_revisions(legacy) == {
+        "DOGE Claimed Status": "TERMINATED",
+        "DOGE Claimed Savings": "1000.00",
+    }
+
+
 def test_unchanged_claim_logs_no_revision(workdir):
     keep = row("KEEP-1", "NPDV", "ordinary termination")
     for day in ("2026-01-01", "2026-01-02", "2026-01-03"):

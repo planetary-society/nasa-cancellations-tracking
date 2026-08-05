@@ -74,13 +74,11 @@ CLAIM_SOURCES = frozenset({sources.DOGE})
 UNEXPLAINED_STATUSES = {"dropped_pending_review", "needs_manual_review"}
 
 # Claim fields: what an external source asserted, kept separate from what the
-# award data shows actually happened.
-CLAIM_COLUMNS = (
-    "Claimed By",
-    "DOGE Claimed Status",
-    "DOGE Claimed Savings",
-    "DOGE Claim Date",
-)
+# award data shows actually happened. Imported, not restated: the ledger treats
+# exactly these columns as write-once, so a fifth claim column listed here but
+# not there would be refresh-clobbered instead of retained - which is the
+# failure STICKY_COLUMNS exists to prevent.
+CLAIM_COLUMNS = build_master_ledger.STICKY_COLUMNS
 
 # Column order of the consolidated snapshot CSV.
 SNAPSHOT_COLUMNS = [
@@ -96,14 +94,14 @@ SNAPSHOT_COLUMNS = [
     "Current Obligated Amount",
     "Total Outlays",
     "Award or Action Description",
-    # Structured counterpart to Detection: the primary signal that caused the
+    # Structured counterpart to Detection Evidence: the primary signal that caused the
     # winning source to include this award.
     "Primary Detection Method",
     # Why the winning source flagged this award, in its own words. Each query
     # module already composes one ("Terminate-for-convenience action P00180 on
     # 2026-05-06"); until this column existed it was dropped here, so the
     # published data could say an award was cancelled but never on what
-    # evidence. Distinct from Claimed Status, which is an outside assertion.
+    # evidence. Distinct from DOGE Claimed Status, an outside assertion.
     "Detection Evidence",
     "Recipient Business Categories",
     "USAspending URL",
@@ -514,14 +512,8 @@ class Search:
                 for row in read_rows(build_master_ledger.LEDGER_PATH):
                     aid = (row.get("Award ID") or "").strip()
                     if aid:
-                        cache.append(
-                            (
-                                aid,
-                                _generated_id_from_url(
-                                    row.get("USAspending URL") or ""
-                                ),
-                            )
-                        )
+                        url = row.get("USAspending URL") or ""
+                        cache.append((aid, _generated_id_from_url(url)))
             self._ledger_award_ids = cache
         return cache
 
@@ -1045,13 +1037,25 @@ class Search:
                 # as NaN, so it is coerced rather than stringified into the
                 # snapshot.
                 detection = _cell(source_row, "status")
+                # Hoisted so the dict below stays one column per line: it is
+                # read as a table against SNAPSHOT_COLUMNS, and wrapped entries
+                # are what make a misplaced field hard to spot.
+                district = award.recipient.location.district
+                description = original_description or award.description
+                categories = ", ".join(award.recipient.business_types)
+                url = canonical_usaspending_url(award.usa_spending_url)
+                initial_end = (
+                    getattr(self, "initial_end_date_rows", {})
+                    .get(award_id, {})
+                    .get("Initial Reported End Date", "")
+                )
 
                 # Keyed by column name: SNAPSHOT_COLUMNS drives the output
                 # order, so a new field cannot silently land in the wrong
                 # column.
                 self.unique_cancellations[award_id] = {
                     "Source": source_name,
-                    "Recipient Congressional District": award.recipient.location.district,
+                    "Recipient Congressional District": district,
                     "Recipient Name": award.recipient.name,
                     "Award ID": award_id,
                     # Same producer as the sidecar row, so the two cannot
@@ -1061,24 +1065,14 @@ class Search:
                     "Current End Date": _award_end_date(award),
                     # Derived independently of which source won this snapshot
                     # row, so a DOGE/NPDV row can retain USAspending history.
-                    "Initial Reported End Date": getattr(
-                        self, "initial_end_date_rows", {}
-                    )
-                    .get(award_id, {})
-                    .get("Initial Reported End Date", ""),
+                    "Initial Reported End Date": initial_end,
                     "Current Obligated Amount": award.award_amount,
                     "Total Outlays": award.total_outlay,
-                    "Award or Action Description": (
-                        original_description or award.description
-                    ),
+                    "Award or Action Description": description,
                     "Primary Detection Method": _cell(source_row, "detection_method"),
                     "Detection Evidence": detection,
-                    "Recipient Business Categories": ", ".join(
-                        award.recipient.business_types
-                    ),
-                    "USAspending URL": canonical_usaspending_url(
-                        award.usa_spending_url
-                    ),
+                    "Recipient Business Categories": categories,
+                    "USAspending URL": url,
                     **{
                         col: self.claims.get(award_id, {}).get(col, "")
                         for col in CLAIM_COLUMNS

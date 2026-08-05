@@ -57,6 +57,7 @@ from collections import Counter
 from datetime import date
 
 import award_transaction_facts
+import csv_aliases
 import initial_end_dates
 import sources
 from contract_query import load_snapshot
@@ -94,7 +95,7 @@ INITIAL_END_DATE_COLUMNS = [
 INITIAL_END_DATE_STATUSES = initial_end_dates.INITIAL_END_DATE_STATUSES
 
 # Auto verdicts allowed to set a ledger Status, and then only at high
-# confidence. Everything else is recorded in the Auto Status column only.
+# confidence. Everything else is recorded in the Automated Verdict column only.
 AUTO_APPLICABLE = {
     "closed_out",
     "reinstated",
@@ -128,6 +129,16 @@ AUTO_NOT_APPLICABLE = {
 # within this set. A claim is the fact being tracked, so automation may refine
 # how a claimed award is described but may never prune it from the ledger.
 AUTO_APPLICABLE_CLAIMED = {"closed_out"}
+
+# Copied onto every ledger row from auto_verification.csv, whatever the award's
+# status - that is how a false positive still in the daily snapshot stays
+# visible. Mirrors LEDGER_OVERLAY_COLUMNS, which does the same job for the
+# transaction-facts sidecar.
+AUTO_OVERLAY_COLUMNS = (
+    "Automated Verdict",
+    "Automated Verdict Date",
+    "Peak Cumulative Obligation",
+)
 
 FPDS_LAST_GOOD_DATE = "2026-02-24"  # last snapshot before ezsearch retirement
 
@@ -221,13 +232,16 @@ STICKY_COLUMNS = (
 )
 
 # Claim fields a source can meaningfully restate (the claimant itself cannot).
-REVISABLE_COLUMNS = ("DOGE Claimed Status", "DOGE Claimed Savings", "DOGE Claim Date")
+# Derived, so that a fifth claim column becomes revisable by adding it once
+# rather than by remembering to add it twice.
+CLAIMANT_COLUMN = "Claimed By"
+REVISABLE_COLUMNS = tuple(c for c in STICKY_COLUMNS if c != CLAIMANT_COLUMN)
 
 # Fields refreshed from the newest observation of an award. A blank value never
 # clobbers a populated one, so a field the API drops for a while keeps its last
 # known value rather than being erased.
 #
-# Detection is refreshed rather than write-once: it describes the award's most
+# Detection Evidence is refreshed rather than write-once: it describes the award's most
 # recent detected action, so a later mod supersedes the earlier evidence. Every
 # snapshot written before 2026-07-30 lacks the column entirely, which reads as
 # blank here and therefore cannot erase a value a newer snapshot supplies.
@@ -276,7 +290,7 @@ def normalize_savings(value):
 
 # The claim preamble doge_search prepends to an award's own description.
 # Stripped from the ledger only because its content is fully preserved in the
-# Claimed Status / Claimed Savings / Claim Date columns, so removing it loses
+# DOGE Claimed Status / Savings / Claim Date columns, so removing it loses
 # nothing. The archived snapshots keep the original prose either way.
 #
 # Other sources' preambles are deliberately left alone. nasa_grants_query's
@@ -318,7 +332,7 @@ def parse_claim_from_description(desc):
     """Recover DOGE claim fields from the pre-2026-07 description prose.
 
     Snapshots written before claim fields became real columns embedded the
-    claim in the Description string, in one of two stable shapes:
+    claim in the Award or Action Description string, in one of two stable shapes:
 
         contracts: "Status: {s}. Reported savings: ${n}. DOGE Action Date: {d}. ..."
         grants:    "DOGE Action Date: {d}. Reported savings: ${n}. ..."
@@ -397,11 +411,10 @@ def derive_trends(rec):
         rec["Amount Trend"] = "flat"
 
     # Prefer the transaction-derived date from the award's base action. The
-    # legacy First End Date remains the fallback for awards whose available
+    # legacy End Date When First Flagged remains the fallback for awards whose available
     # USAspending history carries no end date.
-    first_end = rec.get("Initial Reported End Date") or rec.get(
-        "End Date When First Flagged", ""
-    )
+    tracker_era_end = rec.get("End Date When First Flagged", "")
+    first_end = rec.get("Initial Reported End Date") or tracker_era_end
     latest_end = rec.get("Current End Date", "")
     if not first_end or not latest_end:
         rec["End Date Trend"] = "unknown"
@@ -430,16 +443,25 @@ def derive_trends(rec):
 
 
 def parse_claim_revisions(text):
-    """Newest value of each field recorded in a Claim Revisions string.
+    """Newest value of each field recorded in a DOGE Claim Revisions string.
 
     Only needed to reseed state on the incremental path, where the ledger is
     read back from disk and the in-memory history of a build is gone. Entries
     are "YYYY-MM-DD Column Name=value", joined by "; ".
+
+    The entry names a *column*, so a stored value written before a column was
+    renamed still says the old name - and csv_aliases only translates headers,
+    not the insides of cells. Translating here too is what stops a rename from
+    silently dropping an award's revision history and re-appending revisions
+    that were already recorded. A full rebuild regenerates these values, so
+    this matters on the incremental path, which is exactly where the in-memory
+    history is gone.
     """
     latest = {}
     for entry in (text or "").split("; "):
         _, _, remainder = entry.partition(" ")
         col, sep, value = remainder.partition("=")
+        col = csv_aliases.LEDGER.get(col, col)
         if sep and col in REVISABLE_COLUMNS:
             latest[col] = value
     return latest
@@ -450,13 +472,13 @@ def record_claim(rec, claim, date_str, latest):
 
     The four claim columns hold the *original* assertion and are never
     overwritten. When a source restates a claim (26 awards did, mostly a
-    revised status), the change is appended to Claim Revisions as
+    revised status), the change is appended to DOGE Claim Revisions as
     "YYYY-MM-DD field=new value" so both the original and the revision
     survive in one artifact.
 
     `latest` is this award's most recently seen claim values, carried by the
     caller across snapshots. Tracking it explicitly avoids re-parsing the
-    Claim Revisions string we just wrote - a value containing a semicolon
+    DOGE Claim Revisions string we just wrote - a value containing a semicolon
     would truncate on the way back out.
     """
     if not rec.get("Claimed By"):
@@ -692,13 +714,9 @@ def build(update_only=False):
             rec["Primary Detection Method"] = infer_snapshot_method(rec)
         # Every award carries its machine read, including listed ones - that
         # is how a false positive still in the daily snapshot becomes visible.
-        rec["Automated Verdict"] = auto.get(aid, {}).get("Automated Verdict", "")
-        rec["Automated Verdict Date"] = auto.get(aid, {}).get(
-            "Automated Verdict Date", ""
-        )
-        rec["Peak Cumulative Obligation"] = auto.get(aid, {}).get(
-            "Peak Cumulative Obligation", ""
-        )
+        verdict = auto.get(aid, {})
+        for column in AUTO_OVERLAY_COLUMNS:
+            rec[column] = verdict.get(column, "")
         # Resolved values are write-once on the incremental path. A blank
         # ledger field can be backfilled later, while a missing/blank sidecar
         # value can never erase one already recorded.

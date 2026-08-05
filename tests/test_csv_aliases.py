@@ -10,7 +10,10 @@ import os
 
 import pytest
 
+import build_master_ledger
 import csv_aliases
+import reverify_awards
+import search
 from utils import read_rows
 
 
@@ -30,6 +33,28 @@ def test_no_two_stored_names_collapse_onto_one(table):
     """Two columns merging into one loses a column's data without an error."""
     current = list(table.values())
     assert len(current) == len(set(current))
+
+
+@pytest.mark.parametrize(
+    "table, live_columns",
+    [
+        ("SNAPSHOT", lambda: search.SNAPSHOT_COLUMNS),
+        ("LEDGER", lambda: build_master_ledger.LEDGER_COLUMNS),
+        ("AUTO_VERDICTS", lambda: reverify_awards.AUTO_COLUMNS),
+    ],
+)
+def test_every_alias_target_is_a_column_the_code_still_writes(table, live_columns):
+    """A translation must land on a name something actually reads.
+
+    The other direction is already covered - test_csv_loader checks that every
+    stored name in an archived header is accounted for. Without this half, a
+    typo'd or stale target ("End Date" -> "Currnt End Date", or a column
+    renamed again without updating the table) passes every other test while
+    every archived snapshot delivers a column no code looks at.
+    """
+    targets = set(getattr(csv_aliases, table).values())
+
+    assert targets <= set(live_columns())
 
 
 def test_aliases_are_resolved_from_the_path():

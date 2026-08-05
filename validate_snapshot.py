@@ -33,6 +33,19 @@ from utils import read_rows
 
 MAX_ROW_DROP = 3  # max net rows lost vs. previous snapshot before quarantine
 DISAPPEARANCE_LOG = os.path.join("verification", "disappearance_log.csv")
+# This log keeps its own vocabulary on purpose. It is append-only, so adopting
+# the ledger's renamed columns would either concatenate two header generations
+# into one file or mean rewriting an audit trail; and "Last Description" is a
+# 300-character truncation, not the snapshot column it is taken from. Declared
+# here rather than inline so the divergence reads as a decision.
+DISAPPEARANCE_LOG_COLUMNS = [
+    "Run Date",
+    "Award ID",
+    "Source",
+    "Recipient",
+    "Last Description",
+    "Review Status",
+]
 QUARANTINE_DIR = os.path.join("consolidated", "quarantine")
 REVIEWED_REMOVALS_PATH = os.path.join("verification", "dropped_award_status.csv")
 
@@ -62,16 +75,7 @@ def log_disappearances(new_rows, old_rows, run_date):
     with open(DISAPPEARANCE_LOG, "a", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         if not exists:
-            w.writerow(
-                [
-                    "Run Date",
-                    "Award ID",
-                    "Source",
-                    "Recipient",
-                    "Last Description",
-                    "Review Status",
-                ]
-            )
+            w.writerow(DISAPPEARANCE_LOG_COLUMNS)
         for aid in gone:
             r = old_rows[aid]
             w.writerow(
