@@ -530,16 +530,22 @@ def main(argv=None):
         help="Print the selection and request count without calling the API",
     )
     ap.add_argument(
+        "--max-awards",
         "--max-requests",
+        dest="max_awards",
         type=int,
         default=300,
         help="Hard cap on awards checked this run",
     )
     ap.add_argument(
+        "--recheck-after-days",
         "--stale-days",
+        dest="recheck_after_days",
         type=int,
         default=30,
-        help="Skip awards successfully checked more recently than this",
+        help="Skip awards checked more recently than this. A base rather than a "
+        "flat threshold: the selection tiers scale it, so the cheapest tier "
+        "waits three times as long and the most valuable ignores it.",
     )
     ap.add_argument(
         "--award-id",
@@ -548,12 +554,16 @@ def main(argv=None):
         help="Check only these award IDs (repeatable)",
     )
     ap.add_argument(
+        "--include-excluded-by-design",
         "--include-excluded",
+        dest="include_excluded_by_design",
         action="store_true",
-        help="Also check excluded_by_design awards",
+        help="Also check awards a person marked excluded_by_design",
     )
     ap.add_argument(
+        "--skip-ledger-rebuild",
         "--no-rebuild",
+        dest="skip_ledger_rebuild",
         action="store_true",
         help="Skip the master ledger rebuild at the end",
     )
@@ -570,16 +580,16 @@ def main(argv=None):
     selected, tiers = select_awards(
         ledger,
         previous,
-        stale_days=args.stale_days,
-        include_excluded=args.include_excluded,
+        stale_days=args.recheck_after_days,
+        include_excluded=args.include_excluded_by_design,
         only=args.award_id,
     )
-    if len(selected) > args.max_requests:
+    if len(selected) > args.max_awards:
         print(
-            f"Capping selection {len(selected)} -> {args.max_requests} "
+            f"Capping selection {len(selected)} -> {args.max_awards} "
             f"(--max-requests); the remainder is picked up next run."
         )
-        selected = selected[: args.max_requests]
+        selected = selected[: args.max_awards]
 
     print(f"Ledger {len(ledger)} awards; selected {len(selected)} to re-verify.")
     for tier, n in sorted(tiers.items()):
@@ -675,7 +685,7 @@ def main(argv=None):
             f"outage and leaving {AUTO_VERIFICATION_PATH} untouched rather than "
             f"half-refreshing it."
         )
-        if transaction_facts_changed and not args.no_rebuild:
+        if transaction_facts_changed and not args.skip_ledger_rebuild:
             build_master_ledger.build()
         return 1
 
@@ -695,7 +705,7 @@ def main(argv=None):
                     f"    {r['Award ID']}: auto={r['Automated Verdict']} human={r['Disagrees With Human']}"
                 )
 
-    if not args.no_rebuild:
+    if not args.skip_ledger_rebuild:
         build_master_ledger.build()
     return 0
 

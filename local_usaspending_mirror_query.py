@@ -79,9 +79,28 @@ load_dotenv()
 DSN_ENV_VAR = "DATABASE_URI"
 
 # Fallback form, kept because the operator's .env predates DATABASE_URI.
-# NOTE the naming quirk: DB_URI holds the *host*, not a URI. Renaming it would
-# break the existing .env, so the quirk is documented rather than fixed.
-COMPONENT_ENV_VARS = ("DB_USER", "DB_PASS", "DB_URI", "DB_PORT", "DB_NAME")
+#
+# The host variable is DB_HOST. It used to be DB_URI, which held a bare
+# hostname sitting next to DATABASE_URI, which holds a real URI - two names one
+# letter apart meaning different things, in a file a person edits by hand.
+# DB_URI is still read so an unmigrated .env keeps working; .env is gitignored,
+# so there is no way to migrate it for anyone but the local operator.
+HOST_ENV_VAR = "DB_HOST"
+LEGACY_HOST_ENV_VAR = "DB_URI"
+COMPONENT_ENV_VARS = ("DB_USER", "DB_PASS", HOST_ENV_VAR, "DB_PORT", "DB_NAME")
+
+
+# Every variable this module reads, legacy spellings included. Declared because
+# the developer's machine has a real .env loaded at import, so a test asserting
+# "no credentials" has to clear all of them - and one it forgets is a test that
+# silently asserts nothing.
+ENV_VARS = (DSN_ENV_VAR, LEGACY_HOST_ENV_VAR, *COMPONENT_ENV_VARS)
+
+
+def _configured_host() -> str:
+    """The mirror host, from either the current or the legacy variable."""
+    return os.environ.get(HOST_ENV_VAR) or os.environ.get(LEGACY_HOST_ENV_VAR) or ""
+
 
 EXPORT_BASE = "usaspending_database_direct_query"
 
@@ -610,7 +629,10 @@ class LocalUSASpendingMirrorQuery(ContractQuery):
         """True when this machine holds credentials for the mirror."""
         if os.environ.get(DSN_ENV_VAR):
             return True
-        return all(os.environ.get(var) for var in COMPONENT_ENV_VARS)
+        return all(
+            _configured_host() if var == HOST_ENV_VAR else os.environ.get(var)
+            for var in COMPONENT_ENV_VARS
+        )
 
     @staticmethod
     def _dsn() -> str:
@@ -618,10 +640,11 @@ class LocalUSASpendingMirrorQuery(ContractQuery):
         dsn = os.environ.get(DSN_ENV_VAR)
         if dsn:
             return dsn
-        user, password, host, port, name = (
-            os.environ.get(var, "") for var in COMPONENT_ENV_VARS
-        )
-        return f"postgresql://{user}:{password}@{host}:{port}/{name}"
+        user = os.environ.get("DB_USER", "")
+        password = os.environ.get("DB_PASS", "")
+        port = os.environ.get("DB_PORT", "")
+        name = os.environ.get("DB_NAME", "")
+        return f"postgresql://{user}:{password}@{_configured_host()}:{port}/{name}"
 
     def _require_configured(self) -> None:
         """Raise the narrow availability error when no credentials are set.

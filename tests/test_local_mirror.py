@@ -23,12 +23,15 @@ import usaspending_terminations_query as utq
 from contract_query import FINAL_COLUMNS
 from local_usaspending_mirror_query import LocalUSASpendingMirrorQuery as Q
 
-ENV_VARS = [lm.DSN_ENV_VAR, *lm.COMPONENT_ENV_VARS]
+# Imported, not restated: the module knows which variables it reads, including
+# the legacy host spelling, and one this list forgot would leave a "no
+# credentials" test asserting nothing on a machine with a real .env.
+ENV_VARS = list(lm.ENV_VARS)
 
 COMPONENT_VALUES = {
     "DB_USER": "readonly_user",
     "DB_PASS": "readonly",
-    "DB_URI": "192.168.0.223",
+    "DB_HOST": "192.168.0.223",
     "DB_PORT": "5432",
     "DB_NAME": "data_store_api",
 }
@@ -109,15 +112,36 @@ def test_dsn_prefers_the_full_uri_verbatim(no_db_env, monkeypatch):
     assert Q._dsn() == "postgresql://u:p@host:6543/db?opt=1"
 
 
-def test_dsn_assembles_components_with_db_uri_as_the_host(no_db_env, monkeypatch):
-    """DB_URI holds the host, not a URI - a pre-existing .env naming quirk that
-    a reader would otherwise "fix" into an unusable DSN."""
+def test_dsn_assembles_components_around_the_host(no_db_env, monkeypatch):
     for var, value in COMPONENT_VALUES.items():
         monkeypatch.setenv(var, value)
 
     assert Q._dsn() == (
         "postgresql://readonly_user:readonly@192.168.0.223:5432/data_store_api"
     )
+
+
+def test_a_legacy_env_naming_the_host_db_uri_still_works(no_db_env, monkeypatch):
+    """DB_URI used to hold the host - a bare hostname in a variable named URI,
+    one letter from DATABASE_URI, which holds a real URI. Renamed to DB_HOST,
+    but .env is gitignored, so an operator's file can only migrate itself."""
+    for var, value in COMPONENT_VALUES.items():
+        if var != lm.HOST_ENV_VAR:
+            monkeypatch.setenv(var, value)
+    monkeypatch.setenv(lm.LEGACY_HOST_ENV_VAR, "192.168.0.223")
+
+    assert Q.is_configured() is True
+    assert Q._dsn() == (
+        "postgresql://readonly_user:readonly@192.168.0.223:5432/data_store_api"
+    )
+
+
+def test_the_current_host_variable_wins_over_the_legacy_one(no_db_env, monkeypatch):
+    for var, value in COMPONENT_VALUES.items():
+        monkeypatch.setenv(var, value)
+    monkeypatch.setenv(lm.LEGACY_HOST_ENV_VAR, "stale.example.invalid")
+
+    assert "192.168.0.223" in Q._dsn()
 
 
 # --- historical exports are not replayed ----------------------------------

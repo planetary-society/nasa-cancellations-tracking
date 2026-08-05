@@ -805,15 +805,21 @@ def build(update_only=False):
         )
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument(
+        "--latest-snapshot-only",
         "--update",
+        dest="latest_snapshot_only",
         action="store_true",
-        help="Incrementally merge only the latest snapshot. NOTE: cannot infer "
-        "statuses that depend on description history (reinstated, vacated, "
-        "excluded-by-cause), because it only reads one snapshot. Use a full "
-        "rebuild for anything that will be published.",
+        help="Merge only the newest snapshot instead of replaying all of them. "
+        "Cannot infer statuses that depend on description history (reinstated, "
+        "vacated, excluded-by-cause), because it never sees the older text. Use "
+        "a full rebuild for anything that will be published.",
     )
-    args = ap.parse_args()
-    build(update_only=args.update)
+    args = ap.parse_args(argv)
+    build(update_only=args.latest_snapshot_only)
+
+
+if __name__ == "__main__":
+    main()
