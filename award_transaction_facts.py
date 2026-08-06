@@ -73,8 +73,19 @@ CONTRACT_ACTIONS = {
     "V": "administrative",
     "W": "administrative",
     "Y": "administrative",
-    # Legal contract cancellation is intentionally not treated as a programme
-    # termination; observed NASA uses are routine procurement unwinds.
+    # Legal contract cancellation. Deliberately not a termination HERE, which
+    # is a narrower statement than it looks: this table answers "does the
+    # formal FPDS record carry a termination code", and N is neither F nor
+    # E/X. Action Code Termination Modification is documented as exactly that
+    # record, so it stays blank for an N-coded award.
+    #
+    # That is not the same question the detection nets ask, and they are not in
+    # conflict with it - see detection_methods.LEGAL_CONTRACT_CANCELLATION,
+    # which N-coded detections publish, and the period-truncation gate that
+    # admits them. An earlier version of this comment said observed NASA uses
+    # were routine procurement unwinds; that is half wrong. Of the seven awards
+    # the tracker holds on N alone, five are the CSDA vendor pool cut short by
+    # 19 to 37 months on one day, and two are unwinds.
     "N": "administrative",
 }
 

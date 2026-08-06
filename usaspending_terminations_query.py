@@ -47,6 +47,7 @@ from usaspending import Award, Transaction, TransactionsSearch, USASpendingClien
 import sources
 from contract_query import FINAL_COLUMNS, ContractQuery
 from detection_methods import (
+    LEGAL_CONTRACT_CANCELLATION,
     OBLIGATION_CLAWBACK,
     TERMINATION_ACTION_CODE,
     TERMINATION_LANGUAGE,
@@ -81,6 +82,17 @@ TERMINATION_ACTION_CODES = ("F", "N")
 ACTION_CODE_KINDS = {
     "F": "Terminate-for-convenience action",
     "N": "Legal-contract-cancellation action",
+}
+
+# The published method per code. A lookup rather than an F-or-else ternary so a
+# third code added to TERMINATION_ACTION_CODES cannot silently inherit F's
+# meaning; it would fall to TERMINATION_LANGUAGE, which is wrong loudly rather
+# than wrong quietly. N keeps detection_basis "evidence" - it is an action
+# somebody took, not a deduction - and is narrowed by the period-truncation
+# gate in search.py instead of by the effect gate, which does not separate it.
+ACTION_CODE_METHODS = {
+    "F": TERMINATION_ACTION_CODE,
+    "N": LEGAL_CONTRACT_CANCELLATION,
 }
 EXCLUDED_ACTION_CODES = {"E", "X"}
 ACTION_TYPE_SORT = "Action Type"
@@ -654,10 +666,8 @@ class USASpendingTerminationsQuery(ContractQuery):
                     else "evidence",
                     "detection_method": OBLIGATION_CLAWBACK
                     if clawback_hit is not None
-                    else (
-                        TERMINATION_ACTION_CODE
-                        if (row.action_type or "").upper() in ACTION_CODE_KINDS
-                        else TERMINATION_LANGUAGE
+                    else ACTION_CODE_METHODS.get(
+                        (row.action_type or "").upper(), TERMINATION_LANGUAGE
                     ),
                 }
             )
