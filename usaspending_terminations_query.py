@@ -65,11 +65,24 @@ from tracking_window import TRACKING_WINDOW_START_DATE, to_iso
 # matches nothing at all, and "stop-work" returns a byte-identical result set
 # to "stop work" (the API normalises the hyphen), so both were dropped - three
 # keywords cover the same 92 awards in three sweeps instead of five.
+#
+# The two misspellings below are the ones the corpus proves NASA writes and
+# that nothing else would catch. Declared here rather than derived from
+# TERM_TEXT: `con[vn]\w*` has no finite expansion, `\b` and `[\s-]?` have no
+# wire equivalent, and a derivation would resurrect the two dead keywords
+# above. The containment that IS true - every keyword must satisfy
+# is_termination() - is asserted in tests/test_source_keywords.py, so the API
+# can never fetch a phrase the classifier would then reject.
+#
+# Each keyword costs a full paginated sweep, so this list is the subset NASA
+# actually writes, not everything the regex admits.
 SEARCH_KEYWORDS = [
     "terminate for convenience",
     "terminate-for-convenience",
     "termination for convenience",
     "stop work",
+    "terminate for convience",
+    "termination for connivence",
 ]
 
 # FPDS reason-for-modification codes for "TERMINATE FOR CONVENIENCE (COMPLETE

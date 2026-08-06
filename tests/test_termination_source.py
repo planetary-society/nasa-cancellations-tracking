@@ -847,4 +847,9 @@ def test_dead_and_duplicate_keywords_stay_removed():
         "terminate-for-convenience",
         "termination for convenience",
         "stop work",
+        # NASA's two load-bearing misspellings. The other observed variants
+        # (`forconvenience`, `convicne`) always co-occur with a phrase already
+        # in this list, and each keyword costs a full paginated sweep.
+        "terminate for convience",
+        "termination for connivence",
     ]
