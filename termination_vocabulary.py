@@ -46,14 +46,41 @@ import re
 # Asserts a termination/stop-work happened. Narrow on purpose: every
 # alternative carries a qualifier, so a bare "terminated" does not match.
 TERM_TEXT = re.compile(
-    r"terminat(?:e|ed|ion)[\s-]+for[\s-]+convenience|\bt4c\b|stop[\s-]?work|"
-    r"termination\s+settlement|notice\s+of\s+termination",
+    # NASA misspells "convenience", and not rarely: across 7,518 archived source
+    # descriptions the corpus holds `terminate for convience` (345 rows),
+    # `forconvenience` (36, no separator at all), `termination for connivence`
+    # (8) and `termination for convicne` (1). `[\s-]*` admits the run-together
+    # form; `con[vn]\w*` admits every observed spelling and cannot reach
+    # "cause" or "default", which CAUSE_TEXT owns. Eleven awards carry one;
+    # only 80NSSC24FA558 has no other signal, so this is mostly prospective.
+    r"terminat(?:e|ed|ion)[\s-]*for[\s-]*con[vn]\w*|\bt4c\b|stop[\s-]?work|"
+    r"termination\s+settlement|notice\s+of\s+termination|"
+    # Both orders. "notice of termination" alone missed 80JSC022CA012,
+    # "TERMINATION NOTICE ISSUED: IN SPACE PRODUCTION APPLICATIONS", which
+    # npdv_query's broad net caught and this predicate did not - the kind of
+    # gap that lets two sources disagree about the same sentence.
+    r"terminat(?:ion|ed)\s+notice",
     re.IGNORECASE,
 )
 
 # Termination for cause or default: contractor failure, excluded by
 # methodology (commit 08a52cf) rather than counted as a policy cancellation.
 CAUSE_TEXT = re.compile(r"terminat\w*\s+for\s+(?:cause|default)", re.IGNORECASE)
+
+# "Flight termination system" is the range-safety device that destroys a launch
+# vehicle in flight. It is a fixed compound noun naming HARDWARE, not a contract
+# action - and it does not match TERM_TEXT, so only a deliberately broad net
+# (npdv_query's bare "termination") can mistake it for one. Two such awards were
+# published before this existed: 80LARC26F7025, advisory work on SLS FTS core
+# battery qualification failures, and 80NSSC26P0092, a purchase of a flight
+# termination receiver/decoder. Neither had ever been modified.
+#
+# NOT permanent. Its only caller is npdv_query, and only while that module
+# still matches bare "termination". When NPDV switches to is_termination() this
+# and without_termination_hardware() become dead code and should be deleted -
+# the two award ids above belong in a comment on TERM_TEXT at that point,
+# as the evidence for why no bare terminat\w* alternative is listed there.
+TERMINATION_HARDWARE_TEXT = re.compile(r"\bflight[\s-]*terminat\w*", re.IGNORECASE)
 
 # A court vacated the termination - a legal fact that outranks later activity.
 VACATUR_TEXT = re.compile(r"\bvacat\w*", re.IGNORECASE)
@@ -94,6 +121,20 @@ def is_reversal(text):
 def is_cause(text):
     """True when this text describes a termination for cause or default."""
     return bool(CAUSE_TEXT.search(text or ""))
+
+
+def without_termination_hardware(text):
+    """The text with range-safety hardware names blanked out.
+
+    Deliberately NOT a veto predicate. An award really terminated for
+    convenience can also mention a flight termination system - "terminate for
+    convenience: flight termination receiver order" is both - so a caller must
+    not drop a row merely because the phrase appears. It masks the phrase and
+    leaves the caller to re-run its own test on what is left: if a net still
+    matches, the signal was never the hardware. Same shape as the co-occurrence
+    guards above, applied by subtraction rather than by conjunction.
+    """
+    return TERMINATION_HARDWARE_TEXT.sub(" ", str(text or ""))
 
 
 def is_vacatur(text):

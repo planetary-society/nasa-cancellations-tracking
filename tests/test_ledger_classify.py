@@ -205,3 +205,45 @@ def test_both_modules_use_the_same_predicate_objects():
     assert bml.is_reversal is tv.is_reversal
     assert bml.is_cause is tv.is_cause
     assert bml.is_vacatur is tv.is_vacatur
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("SLS FLIGHT TERMINATION SYSTEM CORE BATTERY QUALIFICATION FAILURES", False),
+        ("FLIGHT TERMINATION RECEIVER/DECODER REPLACEMENT", False),
+        ("AUTONOMOUS FLIGHT-TERMINATION SYSTEM STUDY", False),
+        # Says both: the hardware must not veto a real action.
+        ("TERMINATE FOR CONVENIENCE: FLIGHT TERMINATION RECEIVER ORDER", True),
+        ("STOP WORK ON THE FLIGHT TERMINATION SYSTEM CONTRACT", True),
+    ],
+)
+def test_range_safety_hardware_is_not_a_contract_action(text, expected):
+    """npdv_query's broad net matches bare "termination", so it alone can
+    mistake the device that destroys a launch vehicle for a cancellation."""
+    import re
+
+    import npdv_query
+    import termination_vocabulary as tv
+
+    pattern = re.compile(
+        r"\b(?:"
+        + "|".join(re.escape(p) for p in npdv_query.NPDVQuery.DEFAULT_SEARCH_PHRASES)
+        + r")\b",
+        re.IGNORECASE,
+    )
+    kept = bool(pattern.search(text)) and (
+        bool(pattern.search(tv.without_termination_hardware(text)))
+        or tv.is_termination(text)
+    )
+    assert kept is expected
+
+
+def test_the_shared_predicate_reads_a_termination_notice_in_either_order():
+    """ "notice of termination" alone missed a real one npdv_query caught."""
+    import termination_vocabulary as tv
+
+    assert tv.is_termination("TERMINATION NOTICE ISSUED: INSPA")
+    assert tv.is_termination("Notice of termination issued")
+    # Still narrow: the bare word is not a termination on its own.
+    assert not tv.is_termination("contract termination clause 52.249-2")

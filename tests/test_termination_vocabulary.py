@@ -125,6 +125,14 @@ TERM_YES = [
     "stop-work notice",
     "termination settlement supplemental agreement",
     "notice of termination issued",
+    # Both orders - 80JSC022CA012 says the reverse and was missed.
+    "TERMINATION NOTICE ISSUED: IN SPACE PRODUCTION APPLICATIONS",
+    # The four spellings of "convenience" NASA actually writes, plus the
+    # run-together form. See the comment on TERM_TEXT for the corpus counts.
+    "Terminate for convience agreement",
+    "TERMINATION FORCONVENIENCE",
+    "TERMINATION FOR CONNIVENCE AGREEMENT - COSTAR",
+    "Termination for convicne agreement tor- one software renewal",
 ]
 
 TERM_NO = [
@@ -135,6 +143,15 @@ TERM_NO = [
     "modification to reflect termination of the subject order",
     "administrative change order",
     "",
+    # con[vn]\w* must not reach the vocabulary CAUSE_TEXT owns.
+    "terminated for cause",
+    "termination for default",
+    # Range-safety hardware and a heliophysics term of art. These are the
+    # mutation tests for the tightening: each fails the moment anyone adds a
+    # bare terminat\w* alternative back to TERM_TEXT.
+    "SLS FLIGHT TERMINATION SYSTEM CORE BATTERY QUALIFICATION FAILURES",
+    "flight termination receiver/decoder and uhf command antenna replacement",
+    "the termination shock and the heliosheath",
 ]
 
 

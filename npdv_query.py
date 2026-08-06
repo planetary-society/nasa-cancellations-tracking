@@ -13,7 +13,11 @@ import requests
 
 from contract_query import FINAL_COLUMNS, ContractQuery
 from detection_methods import DESCRIPTION_KEYWORD
-from termination_vocabulary import is_cause
+from termination_vocabulary import (
+    is_cause,
+    is_termination,
+    without_termination_hardware,
+)
 from tracking_window import to_iso
 from utils import parse_mod_number  # Import parse_mod_number function from utils.py
 
@@ -340,6 +344,20 @@ class NPDVQuery(ContractQuery):
                 if description and self._search_pattern_re.search(description):
                     # Exclude "termination for cause" - these are contractor failures, not cancellations
                     if is_cause(description):
+                        continue
+
+                    # A description whose only "termination" is a flight
+                    # termination system names a device, not an action. Re-run
+                    # this net with the hardware masked out - but keep the row
+                    # if the shared predicate, the same is_termination() the
+                    # mirror net and reverify use, independently asserts one.
+                    # Masking alone is not enough: these phrases carry no bare
+                    # "terminate", so "terminate for convenience: flight
+                    # termination receiver order" matched only on the hardware
+                    # and would be dropped by the mask that exists to keep it.
+                    if not self._search_pattern_re.search(
+                        without_termination_hardware(description)
+                    ) and not is_termination(description):
                         continue
 
                     # If description matches, format this row for final output
