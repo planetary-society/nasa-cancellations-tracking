@@ -12,6 +12,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
+import detection_methods
 import local_usaspending_mirror_query as mirror
 import search as s
 from contract_query import DETECTION_BASES, FINAL_COLUMNS, validate_source_frame
@@ -171,6 +172,9 @@ def _search_obj():
     obj.claims = {}
     obj.unresolved = {}
     obj.ignore_award_ids = []
+    # Real state, not scaffolding: the legal-contract-cancellation gate reads
+    # it to decide whether the award period was actually cut short.
+    obj.initial_end_date_rows = {}
     return obj
 
 
@@ -392,3 +396,77 @@ def test_rejections_are_reported_never_silent(capsys):
     out = capsys.readouterr().out
     assert "80LARC17C0001" in out
     assert TRACKING_WINDOW_START in out
+
+
+# --- ingest gate 2b: legal contract cancellation needs corroborating ---------
+
+
+def _check_n(initial, current, aid="A-1", method=None):
+    """Run one award through the gate as a code-N detection.
+
+    Defaults to the real method so a caller can flip it and prove the rule is
+    keyed on the method rather than borrowed from the source.
+    """
+    obj = _search_obj()
+    if initial is not None:
+        obj.initial_end_date_rows[aid] = {"Initial Reported End Date": initial}
+    row = {
+        "action_date": "2025-03-11",
+        "detection_basis": "evidence",
+        "detection_method": method or s.LEGAL_CONTRACT_CANCELLATION,
+    }
+    ok = obj._passes_tracking_window(
+        "USAspending Terminations", aid, _Award(current, ("2025-03-11",)), row
+    )
+    return ok, obj.window_rejects
+
+
+def test_a_cancelled_vehicle_whose_ordering_period_was_cut_is_admitted():
+    """Capella Space, real numbers: the CSDA vendor pool lost 37 months of
+    ordering authority on 2025-03-11. Code N is the only net that sees it."""
+    ok, rejects = _check_n("2028-04-06", "2025-03-11")
+    assert ok
+    assert rejects == []
+
+
+def test_a_cancellation_that_removed_no_future_performance_is_dropped():
+    """Gotham and Crescent Electric, real numbers: the contract was voided and
+    the period of performance never moved. That is a procurement unwind."""
+    ok, rejects = _check_n("2026-09-30", "2026-09-30")
+    assert not ok
+    assert "not cut short" in rejects[0]["Reason"]
+
+
+def test_the_gate_fails_closed_when_nothing_can_corroborate():
+    """No initial date means unknown, not innocent. Retried on a later run
+    rather than guessed into the snapshot - the NASA Grants policy."""
+    ok, rejects = _check_n(None, "2025-03-11")
+    assert not ok
+    assert "no initial reported end date" in rejects[0]["Reason"]
+
+
+@pytest.mark.parametrize(
+    "current,admitted",
+    [
+        ("2026-07-02", False),  # 89 days
+        ("2026-07-01", False),  # exactly 90 - the > / >= boundary itself
+        ("2026-06-30", True),  # 91 days
+    ],
+)
+def test_the_gate_uses_the_shared_ninety_day_threshold(current, admitted):
+    """Strictly greater, one definition of "cut short" shared with the mirror's
+    truncation net. The middle case is the whole point: without it a >= slip
+    passes, because 89 stays out and 91 stays in either way."""
+    ok, _ = _check_n("2026-09-29", current)
+    assert ok is admitted
+
+
+def test_a_terminate_for_convenience_award_is_never_gated_on_its_period():
+    """The rule is keyed on the method. Keyed on the source or on "any action
+    code" instead, this would evict every F-coded termination in the tracker -
+    a closeout mod routinely leaves the period of performance untouched."""
+    ok, rejects = _check_n(
+        "2026-09-30", "2026-09-30", method=detection_methods.TERMINATION_ACTION_CODE
+    )
+    assert ok
+    assert rejects == []

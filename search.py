@@ -13,7 +13,9 @@ import award_period_change_facts
 import award_transaction_facts as transaction_facts
 import build_master_ledger
 import sources
+from award_period import is_significant_shortening
 from contract_query import csv_files_equal, find_most_recent_csv, validate_source_frame
+from detection_methods import LEGAL_CONTRACT_CANCELLATION
 from doge_search import DOGEQuery
 from initial_end_dates import (
     TRANSIENT_STATUSES,
@@ -668,6 +670,43 @@ class Search:
                     f"{end_date or '(none)'}, before tracking window start "
                     f"{TRACKING_WINDOW_START}; the action on {effective} is "
                     f"closeout of an earlier decision",
+                )
+                return False
+
+        # FPDS code N voids a contract; it does not say work stopped. On its
+        # own it fires on routine procurement unwinds, so it is admitted only
+        # where the award period was actually cut - the same corroborate-then-
+        # admit shape _filter_nasa_grant_period_changes uses for NASA Grants.
+        #
+        # Keyed on the METHOD, not the source, so both N-emitting sources are
+        # covered by one rule; and because a bare N ranks below every other
+        # direct-evidence method, an award another net independently held has a
+        # different primary method and never reaches here.
+        if _cell(row, "detection_method") == LEGAL_CONTRACT_CANCELLATION:
+            initial = (self.initial_end_date_rows.get(award_id) or {}).get(
+                "Initial Reported End Date", ""
+            )
+            current, _basis = _award_end_date(award)
+            if not initial:
+                # Fail closed. An unresolved award is retried on a later run
+                # rather than guessed into the snapshot, which is the policy
+                # the NASA Grants filter already states.
+                self._reject(
+                    source,
+                    award_id,
+                    f"legal contract cancellation on {effective}, but no "
+                    f"initial reported end date is available to corroborate "
+                    f"that the award period was cut short",
+                )
+                return False
+            if not is_significant_shortening(initial, current):
+                self._reject(
+                    source,
+                    award_id,
+                    f"legal contract cancellation on {effective}, but the "
+                    f"award period was not cut short ({initial} -> "
+                    f"{current or '(none)'}); a contract voided without "
+                    f"removing future performance is a procurement unwind",
                 )
                 return False
 
