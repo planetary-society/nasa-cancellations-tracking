@@ -94,6 +94,29 @@ def test_repeated_terminations_without_a_reversal_report_the_first():
     assert accept_award([settled, issued]) is issued
 
 
+def test_first_coded_action_supersedes_earlier_stop_work_language():
+    # The reason-for-modification code is the unambiguous signal: a stop-work
+    # notice can precede the formal termination act (80GSFC23CA001's notice
+    # came 2025-03-18, its F code 2025-05-01), and the coded action is the
+    # date of record. Language anchors only awards no code ever confirms.
+    notice = txn("2025-03-18", action_type="M", description="STOP WORK NOTICE ISSUED")
+    coded = txn("2025-05-01", action_type="F", description="TERMINATE FOR CONVENIENCE")
+    assert accept_award([coded, notice]) is coded
+    # No coded action anywhere: the earliest language stands.
+    assert accept_award([notice]) is notice
+    # Grants have no codes at all; a stray code on a grant confirms nothing.
+    grant_notice = txn(
+        "2025-03-18", award_type="grant", description="TERMINATION FOR CONVENIENCE AGREEMENT"
+    )
+    grant_coded = txn(
+        "2025-05-01",
+        action_type="F",
+        award_type="grant",
+        description="TERMINATION FOR CONVENIENCE AGREEMENT",
+    )
+    assert accept_award([grant_coded, grant_notice]) is grant_notice
+
+
 def test_vacatur_clears_the_termination():
     rows = [
         txn("2025-06-01", action_type="F", description="TERMINATE FOR CONVENIENCE"),
