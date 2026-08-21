@@ -12,6 +12,7 @@ Nothing here writes files or prints; `cli.py` owns both.
 import contextlib
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
+from decimal import Decimal
 
 from usaspending import USASpendingClient
 from usaspending.models import get_award_group
@@ -317,6 +318,9 @@ def location_from_payload(data) -> Location:
         city=str(data.get("city_name") or ""),
         state=str(data.get("state_code") or ""),
         zip=str(data.get("zip5") or ""),
+        # The public API's only district field is the as-reported code; the
+        # current (post-redistricting) code exists only in the mirror's tables.
+        district=str(data.get("congressional_code") or ""),
     )
 
 
@@ -327,6 +331,9 @@ class AwardDetails:
     description: str = ""
     recipient_location: Location = EMPTY_LOCATION
     pop_location: Location = EMPTY_LOCATION
+    type_code: str = ""  # the explicit USAspending award type code ("A", "IDV_C", "02", ...)
+    total_obligated: Decimal | None = None
+    total_potential_value: Decimal | None = None
 
 
 _EMPTY_DETAILS = AwardDetails()
@@ -373,6 +380,15 @@ def _award_details(client, txns) -> dict[str, AwardDetails]:
                 pop_location=location_from_payload(
                     award.get_value(["Primary Place of Performance"])
                 ),
+                # "Award Amount" rides on the search row, so this is free.
+                total_obligated=award.total_obligation,
+                # The type code and the potential value live only on the award
+                # detail record: ONE lazy GET per award serves both (the ORM
+                # caches the detail payload after the first access). Grants
+                # come back with a null potential value - FABS has no such
+                # concept - which publishes as a blank cell.
+                type_code=str(award.type or "").strip().upper(),
+                total_potential_value=award.base_and_all_options,
             )
             for key in (
                 award.get_value(["generated_unique_award_id", "generated_internal_id"]),
@@ -446,6 +462,9 @@ def fetch_terminations(client=None, *, lookback_days: int = 120, today=None) -> 
             award_description=found.description,
             recipient_location=found.recipient_location,
             pop_location=found.pop_location,
+            award_type_code=found.type_code,
+            total_obligated=found.total_obligated,
+            total_potential_value=found.total_potential_value,
         )
 
     return [enriched(txn) for txn in accepted]

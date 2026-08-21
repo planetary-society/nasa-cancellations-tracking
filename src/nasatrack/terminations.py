@@ -29,6 +29,7 @@ def txn_to_row(txn: Txn) -> TerminationRow:
         award_id=txn.award_id,
         generated_award_id=txn.generated_award_id,
         award_type=txn.award_type,
+        award_type_code=txn.award_type_code,
         recipient_name=txn.recipient_name,
         action_date=txn.action_date,
         action_type=txn.action_type,
@@ -41,9 +42,13 @@ def txn_to_row(txn: Txn) -> TerminationRow:
         recipient_city=txn.recipient_location.city,
         recipient_state=txn.recipient_location.state,
         recipient_zip=txn.recipient_location.zip,
+        recipient_district=txn.recipient_location.district,
         pop_city=txn.pop_location.city,
         pop_state=txn.pop_location.state,
         pop_zip=txn.pop_location.zip,
+        pop_district=txn.pop_location.district,
+        total_obligated=txn.total_obligated,
+        total_potential_value=txn.total_potential_value,
         detected_by=criteria.detected_by(txn),
         # A part file names its own door; the merge is what ever writes
         # "api;mirror".

@@ -19,6 +19,7 @@ TERMINATION_COLUMNS = [
     "award_id",
     "generated_award_id",
     "award_type",
+    "award_type_code",
     "recipient_name",
     "action_date",
     "action_type",
@@ -31,9 +32,13 @@ TERMINATION_COLUMNS = [
     "recipient_city",
     "recipient_state",
     "recipient_zip",
+    "recipient_district",
     "pop_city",
     "pop_state",
     "pop_zip",
+    "pop_district",
+    "total_obligated",
+    "total_potential_value",
     "detected_by",
     "sources",
     "override_status",
@@ -51,6 +56,7 @@ DOGE_COLUMNS = [
     "usaspending_found",
     "generated_award_id",
     "award_type",
+    "award_type_code",
     "has_explicit_termination",
     "latest_action_date",
     "latest_action_type",
@@ -62,9 +68,12 @@ DOGE_COLUMNS = [
     "recipient_city",
     "recipient_state",
     "recipient_zip",
+    "recipient_district",
     "pop_city",
     "pop_state",
     "pop_zip",
+    "pop_district",
+    "total_potential_value",
     "checked_date",
 ]
 
@@ -72,6 +81,7 @@ POP_CHANGE_COLUMNS = [
     "award_id",
     "generated_award_id",
     "award_type",
+    "award_type_code",
     "recipient_name",
     "award_description",
     "recipient_address1",
@@ -79,9 +89,13 @@ POP_CHANGE_COLUMNS = [
     "recipient_city",
     "recipient_state",
     "recipient_zip",
+    "recipient_district",
     "pop_city",
     "pop_state",
     "pop_zip",
+    "pop_district",
+    "total_obligated",
+    "total_potential_value",
     "original_end_date",
     "max_end_date",
     "current_end_date",
@@ -173,17 +187,17 @@ def test_empty_and_none_render_as_blank(tmp_path):
     path = tmp_path / "terminations.csv"
     write_csv(path, [a_termination(action_date=None, transaction_amount=None, action_type="")])
     row = path.read_text(encoding="utf-8").splitlines()[1].split(",")
-    assert row[5] == ""  # action_date
-    assert row[6] == ""  # action_type
-    assert row[8] == ""  # transaction_amount
+    assert row[6] == ""  # action_date
+    assert row[7] == ""  # action_type
+    assert row[9] == ""  # transaction_amount
 
 
 def test_booleans_render_as_words(tmp_path):
     path = tmp_path / "doge.csv"
     write_csv(path, [a_doge_claim(usaspending_found=True, has_explicit_termination=False)])
     row = path.read_text(encoding="utf-8").splitlines()[1].split(",")
-    assert row[8] == "true"
-    assert row[11] == "false"
+    assert row[8] == "true"  # usaspending_found
+    assert row[12] == "false"  # has_explicit_termination
 
 
 def test_decimal_never_uses_exponent_notation(tmp_path):

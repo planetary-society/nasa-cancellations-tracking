@@ -11,6 +11,7 @@ The fake honours keyword matching (naive substring, as the API does), the
 """
 
 from datetime import date, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -157,6 +158,20 @@ class FakeAward:
             if self._data.get(key) is not None:
                 return self._data[key]
         return default
+
+    # The detail-backed accessors _award_details reads; the real ORM lazily
+    # fetches the award detail record behind these.
+    @property
+    def type(self):
+        return self._data.get("type")
+
+    @property
+    def total_obligation(self):
+        return self._data.get("total_obligation")
+
+    @property
+    def base_and_all_options(self):
+        return self._data.get("base_and_all_options")
 
 
 class FakeAwardSearch:
@@ -571,13 +586,19 @@ def test_award_locations_are_attached_and_a_pop_never_gets_address_lines():
                     "city_name": "HAWTHORNE",
                     "state_code": "CA",
                     "zip5": "90250",
+                    "congressional_code": "36",
                 },
                 # As on the wire: a POP object simply has no address_line keys.
                 "Primary Place of Performance": {
                     "city_name": "PASADENA",
                     "state_code": "CA",
                     "zip5": "91109",
+                    "congressional_code": "28",
                 },
+                # Detail-backed fields the real ORM lazily fetches.
+                "type": "B",
+                "total_obligation": Decimal("1000000"),
+                "base_and_all_options": Decimal("2500000"),
             }
         },
     )
@@ -587,11 +608,16 @@ def test_award_locations_are_attached_and_a_pop_never_gets_address_lines():
     assert result.recipient_location.city == "HAWTHORNE"
     assert result.recipient_location.state == "CA"
     assert result.recipient_location.zip == "90250"
+    assert result.recipient_location.district == "36"
     assert result.pop_location.address1 == ""
     assert result.pop_location.address2 == ""
     assert result.pop_location.city == "PASADENA"
     assert result.pop_location.state == "CA"
     assert result.pop_location.zip == "91109"
+    assert result.pop_location.district == "28"
+    assert result.award_type_code == "B"
+    assert result.total_obligated == Decimal("1000000")
+    assert result.total_potential_value == Decimal("2500000")
 
 
 def test_an_idv_vehicle_types_as_idv_and_is_described_through_the_idv_category():

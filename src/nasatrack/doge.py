@@ -230,6 +230,9 @@ def _enrich_claim(claim: dict, client, today: date) -> DogeClaimRow:
         usaspending_found=True,
         generated_award_id=award.generated_unique_award_id or "",
         award_type=award_type,
+        # The explicit type code and the potential value live on the award
+        # detail record; the ORM fetches it once, lazily, and caches it.
+        award_type_code=str(award.type or "").strip().upper(),
         has_explicit_termination=any(
             is_explicit_termination(
                 api.orm_txn(
@@ -252,9 +255,12 @@ def _enrich_claim(claim: dict, client, today: date) -> DogeClaimRow:
         recipient_city=recipient_location.city,
         recipient_state=recipient_location.state,
         recipient_zip=recipient_location.zip,
+        recipient_district=recipient_location.district,
         pop_city=pop_location.city,
         pop_state=pop_location.state,
         pop_zip=pop_location.zip,
+        pop_district=pop_location.district,
+        total_potential_value=award.base_and_all_options,
         checked_date=today,
     )
 

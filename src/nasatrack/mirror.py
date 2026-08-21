@@ -180,9 +180,17 @@ SELECT nasa.*,
        COALESCE(aws.recipient_location_city_name, '') AS recipient_city,
        COALESCE(aws.recipient_location_state_code, '') AS recipient_state,
        COALESCE(aws.recipient_location_zip5, '') AS recipient_zip,
+       -- The CURRENT (post-redistricting) district where the rollup has one;
+       -- the as-reported code is the fallback, and is all the public API has.
+       COALESCE(aws.recipient_location_congressional_code_current,
+                aws.recipient_location_congressional_code, '') AS recipient_district,
        COALESCE(aws.pop_city_name, '') AS pop_city,
        COALESCE(aws.pop_state_code, '') AS pop_state,
-       COALESCE(aws.pop_zip5, '') AS pop_zip
+       COALESCE(aws.pop_zip5, '') AS pop_zip,
+       COALESCE(aws.pop_congressional_code_current,
+                aws.pop_congressional_code, '') AS pop_district,
+       aws.total_obligation AS total_obligated,
+       aws.base_and_all_options_value AS total_potential_value
 FROM nasa
 JOIN candidates USING (award_id)
 LEFT JOIN rpt.award_search aws ON aws.award_id = nasa.award_id
@@ -198,6 +206,7 @@ def _recipient_location(row) -> criteria.Location:
         city=row["recipient_city"] or "",
         state=row["recipient_state"] or "",
         zip=row["recipient_zip"] or "",
+        district=row["recipient_district"] or "",
     )
 
 
@@ -207,7 +216,13 @@ def _pop_location(row) -> criteria.Location:
         city=row["pop_city"] or "",
         state=row["pop_state"] or "",
         zip=row["pop_zip"] or "",
+        district=row["pop_district"] or "",
     )
+
+
+def _decimal(value) -> Decimal | None:
+    """A numeric column as a plain Decimal, or None when the column is NULL."""
+    return None if value is None else Decimal(str(value))
 
 
 def txn_from_row(row) -> Txn:
@@ -232,7 +247,10 @@ def txn_from_row(row) -> Txn:
         award_description=row["award_description"] or "",
         recipient_location=_recipient_location(row),
         pop_location=_pop_location(row),
-        amount=None if amount is None else Decimal(str(amount)),
+        award_type_code=str(row["award_type_code"] or "").strip().upper(),
+        total_obligated=_decimal(row["total_obligated"]),
+        total_potential_value=_decimal(row["total_potential_value"]),
+        amount=_decimal(amount),
         source="mirror",
         sort_key=str(row["sort_key"] or ""),
     )
@@ -340,9 +358,15 @@ SELECT native_award_id,
        COALESCE(aws.recipient_location_city_name, '') AS recipient_city,
        COALESCE(aws.recipient_location_state_code, '') AS recipient_state,
        COALESCE(aws.recipient_location_zip5, '') AS recipient_zip,
+       COALESCE(aws.recipient_location_congressional_code_current,
+                aws.recipient_location_congressional_code, '') AS recipient_district,
        COALESCE(aws.pop_city_name, '') AS pop_city,
        COALESCE(aws.pop_state_code, '') AS pop_state,
        COALESCE(aws.pop_zip5, '') AS pop_zip,
+       COALESCE(aws.pop_congressional_code_current,
+                aws.pop_congressional_code, '') AS pop_district,
+       aws.total_obligation AS total_obligated,
+       aws.base_and_all_options_value AS total_potential_value,
        ends[1] AS original_end_date,
        max_end_date,
        ends[array_upper(ends, 1)] AS current_end_date,
@@ -379,15 +403,20 @@ def fetch_pop_changes() -> list[PopChangeRow]:
                     is_fpds=row["is_fpds"],
                 ),
                 recipient_name=row["recipient_name"] or "",
+                award_type_code=str(row["award_type_code"] or "").strip().upper(),
                 award_description=row["award_description"] or "",
                 recipient_address1=row["recipient_address1"] or "",
                 recipient_address2=row["recipient_address2"] or "",
                 recipient_city=row["recipient_city"] or "",
                 recipient_state=row["recipient_state"] or "",
                 recipient_zip=row["recipient_zip"] or "",
+                recipient_district=row["recipient_district"] or "",
                 pop_city=row["pop_city"] or "",
                 pop_state=row["pop_state"] or "",
                 pop_zip=row["pop_zip"] or "",
+                pop_district=row["pop_district"] or "",
+                total_obligated=_decimal(row["total_obligated"]),
+                total_potential_value=_decimal(row["total_potential_value"]),
                 original_end_date=criteria.as_date(row["original_end_date"]),
                 max_end_date=criteria.as_date(row["max_end_date"]),
                 current_end_date=criteria.as_date(row["current_end_date"]),

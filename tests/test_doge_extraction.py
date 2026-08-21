@@ -167,7 +167,9 @@ class FakeAward:
     def __init__(self, category="contract", transactions=(), data=None):
         self.category = category
         self.generated_unique_award_id = "CONT_AWD_80NSSC25C0001_8000_-NONE-_-NONE-"
+        self.type = "A"
         self.total_obligation = Decimal("1234.00")
+        self.base_and_all_options = Decimal("5000.00")
         self.period_of_performance = FakePeriod(date(2026, 9, 30))
         self.transactions = FakeTransactions(transactions)
         self._data = data or {}

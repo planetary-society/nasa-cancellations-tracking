@@ -48,9 +48,13 @@ def row(description="", *, action_type="", is_fpds=True, type_code="C", day="202
         "recipient_city": "HAWTHORNE",
         "recipient_state": "CA",
         "recipient_zip": "90250",
+        "recipient_district": "36",
         "pop_city": "PASADENA",
         "pop_state": "CA",
         "pop_zip": "91109",
+        "pop_district": "28",
+        "total_obligated": None,
+        "total_potential_value": None,
         "amount": None,
         "recipient_name": "ACME AEROSPACE",
     }

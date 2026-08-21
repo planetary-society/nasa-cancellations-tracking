@@ -21,6 +21,7 @@ class TerminationRow:
     award_id: str
     generated_award_id: str
     award_type: str  # contract | idv | grant
+    award_type_code: str = ""  # the explicit USASpending type code ("A", "IDV_C", "02", ...)
     recipient_name: str = ""
     action_date: date | None = None
     action_type: str = ""  # F | N | ""
@@ -35,9 +36,13 @@ class TerminationRow:
     recipient_city: str = ""
     recipient_state: str = ""
     recipient_zip: str = ""
+    recipient_district: str = ""  # congressional district code; current-vintage via the mirror
     pop_city: str = ""
     pop_state: str = ""
     pop_zip: str = ""
+    pop_district: str = ""
+    total_obligated: Decimal | None = None
+    total_potential_value: Decimal | None = None  # base-and-all-options; blank for grants
     detected_by: str = ""  # action_code | description | both
     sources: str = ""  # api | mirror | api;mirror
     override_status: str = ""
@@ -58,6 +63,7 @@ class DogeClaimRow:
     usaspending_found: bool = False
     generated_award_id: str = ""
     award_type: str = ""
+    award_type_code: str = ""  # the explicit USASpending type code, when found
     has_explicit_termination: bool = False
     latest_action_date: date | None = None
     latest_action_type: str = ""
@@ -71,9 +77,14 @@ class DogeClaimRow:
     recipient_city: str = ""
     recipient_state: str = ""
     recipient_zip: str = ""
+    recipient_district: str = ""
     pop_city: str = ""
     pop_state: str = ""
     pop_zip: str = ""
+    pop_district: str = ""
+    # current_obligation above already carries the award's total obligation, so
+    # only the potential value is added here rather than a duplicate column.
+    total_potential_value: Decimal | None = None
     checked_date: date | None = None
 
 
@@ -84,6 +95,7 @@ class PopChangeRow:
     award_id: str
     generated_award_id: str
     award_type: str
+    award_type_code: str = ""  # the explicit USASpending type code
     recipient_name: str = ""
     award_description: str = ""  # the award's current USASpending summary
     # As on TerminationRow: award-level locations, no POP street address.
@@ -92,9 +104,13 @@ class PopChangeRow:
     recipient_city: str = ""
     recipient_state: str = ""
     recipient_zip: str = ""
+    recipient_district: str = ""
     pop_city: str = ""
     pop_state: str = ""
     pop_zip: str = ""
+    pop_district: str = ""
+    total_obligated: Decimal | None = None
+    total_potential_value: Decimal | None = None
     original_end_date: date | None = None
     max_end_date: date | None = None
     current_end_date: date | None = None

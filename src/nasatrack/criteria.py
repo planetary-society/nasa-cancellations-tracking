@@ -338,6 +338,11 @@ class Location:
     city: str = ""
     state: str = ""
     zip: str = ""
+    # Congressional district code ("04"). The mirror serves the CURRENT
+    # (post-redistricting) code with the as-reported one as fallback; the
+    # public API exposes only the as-reported code, so that is what the API
+    # door can supply - the mirror-wins merge upgrades shared rows.
+    district: str = ""
 
 
 # Immutable, so one instance is a safe default for every Txn.
@@ -363,6 +368,12 @@ class Txn:
     award_description: str = ""
     recipient_location: Location = EMPTY_LOCATION
     pop_location: Location = EMPTY_LOCATION
+    # The explicit USAspending award type code ("A", "IDV_C", "02", ...) behind
+    # the contract|idv|grant grouping above. The mirror reads it off every
+    # transaction row; the API door reads it off the award detail record.
+    award_type_code: str = ""
+    total_obligated: Decimal | None = None
+    total_potential_value: Decimal | None = None
     amount: Decimal | None = None
     source: str = ""  # mirror | api
     sort_key: str = ""  # tie-break within one action_date
