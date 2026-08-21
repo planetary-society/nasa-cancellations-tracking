@@ -164,12 +164,19 @@ class FakePeriod:
 
 
 class FakeAward:
-    def __init__(self, category="contract", transactions=()):
+    def __init__(self, category="contract", transactions=(), data=None):
         self.category = category
         self.generated_unique_award_id = "CONT_AWD_80NSSC25C0001_8000_-NONE-_-NONE-"
         self.total_obligation = Decimal("1234.00")
         self.period_of_performance = FakePeriod(date(2026, 9, 30))
         self.transactions = FakeTransactions(transactions)
+        self._data = data or {}
+
+    def get_value(self, keys, default=None):
+        for key in keys:
+            if self._data.get(key) is not None:
+                return self._data[key]
+        return default
 
 
 class FakeAwards:
@@ -223,6 +230,38 @@ def test_a_stale_existing_row_is_re_enriched():
     assert client.awards.calls == ["80NSSC25C0001"]
     assert rows[0].checked_date == date(2026, 8, 20)
     assert rows[0].latest_description == "admin mod"
+
+
+def test_enrichment_carries_the_award_locations():
+    # find_by_award_id is search-backed, so the locations ride on the same
+    # fields the API door's award search reads - and a POP never has address
+    # lines, so its address columns stay "".
+    client = FakeClient(
+        FakeAward(
+            transactions=[FakeTransaction(date(2025, 4, 1), "C", "admin mod")],
+            data={
+                "Recipient Location": {
+                    "address_line1": "1 ROCKET RD",
+                    "city_name": "HAWTHORNE",
+                    "state_code": "CA",
+                    "zip5": "90250",
+                },
+                "Primary Place of Performance": {
+                    "city_name": "PASADENA",
+                    "state_code": "CA",
+                    "zip5": "91109",
+                },
+            },
+        )
+    )
+    (enriched,) = doge.enrich([_claim()], client, today=date(2026, 8, 20))
+    assert enriched.recipient_address1 == "1 ROCKET RD"
+    assert enriched.recipient_city == "HAWTHORNE"
+    assert enriched.recipient_state == "CA"
+    assert enriched.recipient_zip == "90250"
+    assert enriched.pop_city == "PASADENA"
+    assert enriched.pop_state == "CA"
+    assert enriched.pop_zip == "91109"
 
 
 def test_a_settled_terminated_row_is_never_re_enriched():

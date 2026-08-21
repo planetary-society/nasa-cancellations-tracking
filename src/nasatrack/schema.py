@@ -27,6 +27,17 @@ class TerminationRow:
     modification_number: str = ""
     transaction_amount: Decimal | None = None
     transaction_description: str = ""
+    award_description: str = ""  # the award's current USASpending summary
+    # The award-level recipient and place-of-performance locations. USAspending
+    # reports no street address for a POP, so there are no pop_address columns.
+    recipient_address1: str = ""
+    recipient_address2: str = ""
+    recipient_city: str = ""
+    recipient_state: str = ""
+    recipient_zip: str = ""
+    pop_city: str = ""
+    pop_state: str = ""
+    pop_zip: str = ""
     detected_by: str = ""  # action_code | description | both
     sources: str = ""  # api | mirror | api;mirror
     override_status: str = ""
@@ -53,6 +64,16 @@ class DogeClaimRow:
     latest_description: str = ""
     current_obligation: Decimal | None = None
     current_end_date: date | None = None
+    # The award-level locations, present only when the award was found. A POP
+    # never has street address lines, so there are no pop_address columns.
+    recipient_address1: str = ""
+    recipient_address2: str = ""
+    recipient_city: str = ""
+    recipient_state: str = ""
+    recipient_zip: str = ""
+    pop_city: str = ""
+    pop_state: str = ""
+    pop_zip: str = ""
     checked_date: date | None = None
 
 
@@ -64,6 +85,16 @@ class PopChangeRow:
     generated_award_id: str
     award_type: str
     recipient_name: str = ""
+    award_description: str = ""  # the award's current USASpending summary
+    # As on TerminationRow: award-level locations, no POP street address.
+    recipient_address1: str = ""
+    recipient_address2: str = ""
+    recipient_city: str = ""
+    recipient_state: str = ""
+    recipient_zip: str = ""
+    pop_city: str = ""
+    pop_state: str = ""
+    pop_zip: str = ""
     original_end_date: date | None = None
     max_end_date: date | None = None
     current_end_date: date | None = None

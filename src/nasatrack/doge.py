@@ -220,6 +220,11 @@ def _enrich_claim(claim: dict, client, today: date) -> DogeClaimRow:
         else None
     )
     period = award.period_of_performance
+    # The lookup is search-backed, so the row already carries the same location
+    # fields the API door's award search reads - no further request, and the
+    # same raw-payload mapping via the shared helper.
+    recipient_location = api.location_from_payload(award.get_value(["Recipient Location"]))
+    pop_location = api.location_from_payload(award.get_value(["Primary Place of Performance"]))
     return DogeClaimRow(
         **claim,
         usaspending_found=True,
@@ -242,6 +247,14 @@ def _enrich_claim(claim: dict, client, today: date) -> DogeClaimRow:
         latest_description=(latest.transaction_description or "") if latest else "",
         current_obligation=award.total_obligation,
         current_end_date=period.end_date if period else None,
+        recipient_address1=recipient_location.address1,
+        recipient_address2=recipient_location.address2,
+        recipient_city=recipient_location.city,
+        recipient_state=recipient_location.state,
+        recipient_zip=recipient_location.zip,
+        pop_city=pop_location.city,
+        pop_state=pop_location.state,
+        pop_zip=pop_location.zip,
         checked_date=today,
     )
 

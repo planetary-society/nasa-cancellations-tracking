@@ -324,6 +324,27 @@ def mod_sort_key(mod) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class Location:
+    """One place, as USAspending reports it on the award-level record.
+
+    Used for both the recipient's location and the place of performance. A POP
+    never carries street address lines - USAspending reports no street address
+    for places of performance, only city/state/zip - so a POP's address fields
+    are always "".
+    """
+
+    address1: str = ""
+    address2: str = ""
+    city: str = ""
+    state: str = ""
+    zip: str = ""
+
+
+# Immutable, so one instance is a safe default for every Txn.
+EMPTY_LOCATION = Location()
+
+
+@dataclass(frozen=True, slots=True)
 class Txn:
     """One award transaction, normalised out of either door."""
 
@@ -336,6 +357,12 @@ class Txn:
     action_type: str = ""  # FPDS action code; "" for FABS (grants)
     modification_number: str = ""
     description: str = ""
+    # The AWARD's current summary and locations on USAspending, not this
+    # transaction's own fields. Enrichment only: no predicate below reads
+    # them, so a door may leave them empty.
+    award_description: str = ""
+    recipient_location: Location = EMPTY_LOCATION
+    pop_location: Location = EMPTY_LOCATION
     amount: Decimal | None = None
     source: str = ""  # mirror | api
     sort_key: str = ""  # tie-break within one action_date

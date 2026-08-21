@@ -10,6 +10,7 @@ Nothing here writes files or prints; `cli.py` owns both.
 """
 
 import contextlib
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
 from usaspending import USASpendingClient
@@ -17,12 +18,15 @@ from usaspending.models import get_award_group
 
 from .criteria import (
     API_KEYWORDS,
+    EMPTY_LOCATION,
     NASA_TOPTIER,
     WINDOW_START,
+    Location,
     Txn,
     accept_award,
     as_date,
     award_key,
+    award_type,
     group_by_award,
     has_termination_code,
     mod_sort_key,
@@ -102,14 +106,24 @@ def _assistance(client, start: str, end: str):
 # ---------------------------------------------------------------------------
 
 
-def _award_type(row, default: str) -> str:
+def _award_type(row, generated_award_id: str, default: str) -> str:
     """contract | idv | grant for one row.
 
     Global search rows report the award type as a description string ("Delivery
     Order", "BPA Blanket Purchase Agreement"); award-scoped rows report neither,
     hence the per-sweep default.
+
+    On the FPDS side the generated award id has the last word: an IDV vehicle's
+    own transactions do not reliably carry a type the ORM's grouping recognises,
+    and falling to the "contract" default would split one award across the two
+    doors - the mirror types the same rows through `criteria.award_type`'s
+    CONT_IDV_ rule, and the award-description search files IDVs under a
+    different category than contracts.
     """
-    return get_award_group(row.type or "") or get_award_group(row.award_type or "") or default
+    group = get_award_group(row.type or "") or get_award_group(row.award_type or "") or default
+    if group == "grant":
+        return "grant"
+    return award_type(generated_id=generated_award_id, is_fpds=True)
 
 
 def orm_txn(
@@ -156,7 +170,7 @@ def _from_search(row, default_award_type: str) -> Txn:
         award_key=award_key(generated_award_id, award_id),
         award_id=award_id,
         generated_award_id=generated_award_id,
-        award_type=_award_type(row, default_award_type),
+        award_type=_award_type(row, generated_award_id, default_award_type),
     )
 
 
@@ -279,6 +293,97 @@ def _follow_up(client, anchors: list[Txn], end: str) -> list[Txn]:
 
 
 # ---------------------------------------------------------------------------
+# Award-level enrichment
+# ---------------------------------------------------------------------------
+
+# The award search accepts exactly one award-type category per request, and
+# these are the builder methods that select each of ours.
+_AWARD_SEARCH_SCOPE = {"contract": "contracts", "idv": "idvs", "grant": "grants"}
+
+
+def location_from_payload(data) -> Location:
+    """A USAspending location object as a `Location`.
+
+    The same key set appears in the award search's "Recipient Location" and
+    "Primary Place of Performance" fields and in the award detail endpoint's
+    `recipient.location` and `place_of_performance` objects, so every door that
+    reads a location off the wire reads it here. A POP object simply has no
+    address_line keys, which is how its address fields come out "".
+    """
+    data = data or {}
+    return Location(
+        address1=str(data.get("address_line1") or ""),
+        address2=str(data.get("address_line2") or ""),
+        city=str(data.get("city_name") or ""),
+        state=str(data.get("state_code") or ""),
+        zip=str(data.get("zip5") or ""),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AwardDetails:
+    """The award-level enrichment one award search row carries."""
+
+    description: str = ""
+    recipient_location: Location = EMPTY_LOCATION
+    pop_location: Location = EMPTY_LOCATION
+
+
+_EMPTY_DETAILS = AwardDetails()
+
+
+def _award_details(client, txns) -> dict[str, AwardDetails]:
+    """Award-level description and locations for these transactions' awards.
+
+    A transaction row only ever carries its own fields; the award's current
+    summary and locations live on the award record, and the award search
+    returns them as standard search fields. `award_ids` batches the whole set
+    into one request per award-type category (the endpoint takes one category
+    at a time), where lazy per-award fetches would cost one request each. The
+    agency filter guards the native-id lookup: a PIID is only unique per
+    agency.
+
+    Each result is filed under both its generated and native id, because which
+    of the two a transaction row carries is not consistent. The raw search
+    fields are used rather than the ORM's accessors, which title-case the text
+    away from what the mirror door publishes for the same award.
+
+    This is enrichment, never detection: an award the search fails to return is
+    a blank, visible cell that heals on a later run, so unlike the sweeps there
+    is no completeness guard to fail the run over.
+    """
+    details: dict[str, AwardDetails] = {}
+    for category, scope in _AWARD_SEARCH_SCOPE.items():
+        ids = sorted({txn.award_id for txn in txns if txn.award_id and txn.award_type == category})
+        if not ids:
+            continue
+        query = (
+            getattr(client.awards.search(), scope)()
+            .agency(NASA_TOPTIER)
+            .award_ids(*ids)
+            .page_size(PAGE_SIZE)
+            # The same pagination-drift guard as _all_rows, in this endpoint's
+            # field naming.
+            .order_by("Award ID", "asc")
+        )
+        for award in query.all():
+            found = AwardDetails(
+                description=str(award.get_value(["Description", "description"]) or ""),
+                recipient_location=location_from_payload(award.get_value(["Recipient Location"])),
+                pop_location=location_from_payload(
+                    award.get_value(["Primary Place of Performance"])
+                ),
+            )
+            for key in (
+                award.get_value(["generated_unique_award_id", "generated_internal_id"]),
+                award.get_value(["Award ID"]),
+            ):
+                if key:
+                    details[str(key)] = found
+    return details
+
+
+# ---------------------------------------------------------------------------
 # The door
 # ---------------------------------------------------------------------------
 
@@ -330,5 +435,17 @@ def fetch_terminations(client=None, *, lookback_days: int = 120, today=None) -> 
         for txn in _follow_up(client, list(anchored.values()), end):
             groups.setdefault(anchor_keys.get(txn.award_id, txn.award_key), []).append(txn)
 
-    accepted = (accept_award(groups[key]) for key in anchored)
-    return [txn for txn in accepted if txn is not None]
+        rejudged = (accept_award(groups[key]) for key in anchored)
+        accepted = [txn for txn in rejudged if txn is not None]
+        details = _award_details(client, accepted)
+
+    def enriched(txn: Txn) -> Txn:
+        found = details.get(txn.generated_award_id) or details.get(txn.award_id) or _EMPTY_DETAILS
+        return replace(
+            txn,
+            award_description=found.description,
+            recipient_location=found.recipient_location,
+            pop_location=found.pop_location,
+        )
+
+    return [enriched(txn) for txn in accepted]

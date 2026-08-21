@@ -143,6 +143,12 @@ def _cursor(statement_timeout_s: int):
 # award flagged by any single transaction comes back with every in-window
 # transaction it has, so `accept_award` can see the rescission that followed
 # the stop-work order.
+#
+# `award_search` is the award-level rollup table (PK award_id, same id space as
+# transaction_search.award_id); its `description` is the award's current
+# summary on USAspending, which the per-transaction descriptions never carry.
+# LEFT JOIN, because a missing rollup row must cost a blank cell, not the
+# award's whole history.
 SQL_TERMINATION_CANDIDATES = f"""
 WITH nasa AS (
     SELECT ts.award_id,
@@ -167,11 +173,41 @@ candidates AS (
     WHERE (is_fpds AND action_type = ANY(%(codes)s))
        OR description ~* %(pattern)s
 )
-SELECT nasa.*
+SELECT nasa.*,
+       COALESCE(aws.description, '') AS award_description,
+       COALESCE(aws.recipient_location_address_line1, '') AS recipient_address1,
+       COALESCE(aws.recipient_location_address_line2, '') AS recipient_address2,
+       COALESCE(aws.recipient_location_city_name, '') AS recipient_city,
+       COALESCE(aws.recipient_location_state_code, '') AS recipient_state,
+       COALESCE(aws.recipient_location_zip5, '') AS recipient_zip,
+       COALESCE(aws.pop_city_name, '') AS pop_city,
+       COALESCE(aws.pop_state_code, '') AS pop_state,
+       COALESCE(aws.pop_zip5, '') AS pop_zip
 FROM nasa
 JOIN candidates USING (award_id)
+LEFT JOIN rpt.award_search aws ON aws.award_id = nasa.award_id
 ORDER BY nasa.award_id, nasa.action_date, nasa.sort_key
 """
+
+
+def _recipient_location(row) -> criteria.Location:
+    """The award's recipient location columns as a `Location`."""
+    return criteria.Location(
+        address1=row["recipient_address1"] or "",
+        address2=row["recipient_address2"] or "",
+        city=row["recipient_city"] or "",
+        state=row["recipient_state"] or "",
+        zip=row["recipient_zip"] or "",
+    )
+
+
+def _pop_location(row) -> criteria.Location:
+    """The award's place-of-performance columns as a `Location` (no street address exists)."""
+    return criteria.Location(
+        city=row["pop_city"] or "",
+        state=row["pop_state"] or "",
+        zip=row["pop_zip"] or "",
+    )
 
 
 def txn_from_row(row) -> Txn:
@@ -193,6 +229,9 @@ def txn_from_row(row) -> Txn:
         action_type=str(row["action_type"] or "").strip().upper(),
         modification_number=row["modification_number"] or "",
         description=row["description"] or "",
+        award_description=row["award_description"] or "",
+        recipient_location=_recipient_location(row),
+        pop_location=_pop_location(row),
         amount=None if amount is None else Decimal(str(amount)),
         source="mirror",
         sort_key=str(row["sort_key"] or ""),
@@ -292,6 +331,18 @@ SELECT native_award_id,
        award_type_code,
        is_fpds,
        recipient_name,
+       -- The award-level summary and locations, joined exactly as the
+       -- terminations query joins them: LEFT, so a missing rollup row is a
+       -- blank cell, not a vanished lead.
+       COALESCE(aws.description, '') AS award_description,
+       COALESCE(aws.recipient_location_address_line1, '') AS recipient_address1,
+       COALESCE(aws.recipient_location_address_line2, '') AS recipient_address2,
+       COALESCE(aws.recipient_location_city_name, '') AS recipient_city,
+       COALESCE(aws.recipient_location_state_code, '') AS recipient_state,
+       COALESCE(aws.recipient_location_zip5, '') AS recipient_zip,
+       COALESCE(aws.pop_city_name, '') AS pop_city,
+       COALESCE(aws.pop_state_code, '') AS pop_state,
+       COALESCE(aws.pop_zip5, '') AS pop_zip,
        ends[1] AS original_end_date,
        max_end_date,
        ends[array_upper(ends, 1)] AS current_end_date,
@@ -299,6 +350,7 @@ SELECT native_award_id,
        last_action_date,
        transaction_count
 FROM agg
+LEFT JOIN rpt.award_search aws ON aws.award_id = agg.award_id
 WHERE max_end_date - ends[array_upper(ends, 1)] > %(min_days)s
   -- The award has to have been pulled back TO a date inside the window; an
   -- award that finished in 2019 is not a lead.
@@ -327,6 +379,15 @@ def fetch_pop_changes() -> list[PopChangeRow]:
                     is_fpds=row["is_fpds"],
                 ),
                 recipient_name=row["recipient_name"] or "",
+                award_description=row["award_description"] or "",
+                recipient_address1=row["recipient_address1"] or "",
+                recipient_address2=row["recipient_address2"] or "",
+                recipient_city=row["recipient_city"] or "",
+                recipient_state=row["recipient_state"] or "",
+                recipient_zip=row["recipient_zip"] or "",
+                pop_city=row["pop_city"] or "",
+                pop_state=row["pop_state"] or "",
+                pop_zip=row["pop_zip"] or "",
                 original_end_date=criteria.as_date(row["original_end_date"]),
                 max_end_date=criteria.as_date(row["max_end_date"]),
                 current_end_date=criteria.as_date(row["current_end_date"]),

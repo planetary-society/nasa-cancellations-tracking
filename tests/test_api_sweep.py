@@ -146,6 +146,80 @@ class FakeTransactions:
         return FakeSearch(self.client)
 
 
+class FakeAward:
+    """One award-search result: `get_value` reads the raw search row, as the ORM does."""
+
+    def __init__(self, data):
+        self._data = data
+
+    def get_value(self, keys, default=None):
+        for key in keys:
+            if self._data.get(key) is not None:
+                return self._data[key]
+        return default
+
+
+class FakeAwardSearch:
+    """Records one award-search request and serves `client.award_descriptions`."""
+
+    def __init__(self, client):
+        self.client = client
+        self.categories = []
+        self.ids = None
+        self.agency_name = None
+        self.size = None
+        self.ordering = None
+
+    def contracts(self):
+        self.categories.append("contracts")
+        return self
+
+    def idvs(self):
+        self.categories.append("idvs")
+        return self
+
+    def grants(self):
+        self.categories.append("grants")
+        return self
+
+    def agency(self, name):
+        self.agency_name = name
+        return self
+
+    def award_ids(self, *ids):
+        self.ids = ids
+        return self
+
+    def page_size(self, size):
+        self.size = size
+        return self
+
+    def order_by(self, field, direction):
+        self.ordering = (field, direction)
+        return self
+
+    def all(self):
+        self.client.award_searches.append(self)
+        # Only the awards the descriptions table knows come back, like the real
+        # search: an id it does not return stays a blank cell downstream.
+        return [
+            FakeAward(
+                {"Award ID": award_id, "Description": description}
+                | self.client.award_locations.get(award_id, {})
+            )
+            for award_id, description in sorted(self.client.award_descriptions.items())
+            if award_id in self.ids
+        ]
+
+
+class FakeAwards:
+    def __init__(self, client):
+        self.client = client
+
+    def search(self):
+        return FakeAwardSearch(self.client)
+
+
 class FakeClient:
     def __init__(
         self,
@@ -157,6 +231,8 @@ class FakeClient:
         follow_up_failures=(),
         count_overshoot=0,
         es_window=0,
+        award_descriptions=None,
+        award_locations=None,
     ):
         self.contract_rows = list(contract_rows)
         self.grant_rows = list(grant_rows)
@@ -166,8 +242,14 @@ class FakeClient:
         self.follow_up_failures = set(follow_up_failures)
         self.count_overshoot = count_overshoot
         self.es_window = es_window  # 0 = uncapped
+        # Native award id -> the award search's "Description" field.
+        self.award_descriptions = award_descriptions or {}
+        # Native award id -> extra search fields ("Recipient Location", ...).
+        self.award_locations = award_locations or {}
         self.searches = []
+        self.award_searches = []
         self.transactions = FakeTransactions(self)
+        self.awards = FakeAwards(self)
 
 
 def keys(results):
@@ -402,6 +484,8 @@ def test_no_anchor_means_no_follow_up_at_all():
     assert fetch_terminations(client, today=TODAY) == []
     _, _, follow_up = requests(client)
     assert follow_up == []
+    # Nothing accepted means nothing to describe either.
+    assert client.award_searches == []
 
 
 def test_follow_up_failure_propagates():
@@ -412,6 +496,125 @@ def test_follow_up_failure_propagates():
     )
     with pytest.raises(RuntimeError, match="award history unavailable"):
         fetch_terminations(client, today=TODAY)
+
+
+# ---------------------------------------------------------------------------
+# Award-description enrichment
+# ---------------------------------------------------------------------------
+
+
+def test_award_description_is_attached_from_the_award_search():
+    client = FakeClient(
+        contract_rows=[
+            row("80NSSC25C0040", action_date="2026-07-01", action_type="F", description="Mod 12")
+        ],
+        award_descriptions={"80NSSC25C0040": "MARS RELAY NETWORK OPERATIONS"},
+    )
+    (result,) = fetch_terminations(client, today=TODAY)
+    assert result.award_description == "MARS RELAY NETWORK OPERATIONS"
+    # The transaction's own text is untouched by the award-level summary.
+    assert result.description == "Mod 12"
+
+    (search,) = client.award_searches
+    assert search.ids == ("80NSSC25C0040",)
+    assert search.agency_name == NASA_TOPTIER
+    assert search.size == PAGE_SIZE
+    assert search.ordering == ("Award ID", "asc")
+
+
+def test_award_descriptions_are_batched_one_request_per_category():
+    # The award search takes one award-type category per request, so a mixed
+    # accepted set costs one request per category it spans - never one per award.
+    client = FakeClient(
+        contract_rows=[
+            row("80NSSC25C0041", action_date="2026-07-01", action_type="F"),
+            row("80NSSC25C0042", action_date="2026-07-01", action_type="F"),
+        ],
+        grant_rows=[
+            row(
+                "80NSSC25K0043",
+                action_date="2026-07-01",
+                description="Termination for convenience agreement",
+                award_type="Cooperative Agreement",
+                generated="ASST_NON_80NSSC25K0043",
+            )
+        ],
+        award_descriptions={"80NSSC25C0041": "SPACE SUIT SERVICES"},
+    )
+    results = fetch_terminations(client, today=TODAY)
+    assert len(results) == 3
+    assert [s.categories for s in client.award_searches] == [["contracts"], ["grants"]]
+    assert {s.ids for s in client.award_searches} == {
+        ("80NSSC25C0041", "80NSSC25C0042"),
+        ("80NSSC25K0043",),
+    }
+    # An award the search does not return stays a blank, visible cell.
+    by_id = {txn.award_id: txn.award_description for txn in results}
+    assert by_id == {
+        "80NSSC25C0041": "SPACE SUIT SERVICES",
+        "80NSSC25C0042": "",
+        "80NSSC25K0043": "",
+    }
+
+
+def test_award_locations_are_attached_and_a_pop_never_gets_address_lines():
+    client = FakeClient(
+        contract_rows=[
+            row("80NSSC25C0050", action_date="2026-07-01", action_type="F", description="Mod 2")
+        ],
+        award_descriptions={"80NSSC25C0050": "LAUNCH SERVICES"},
+        award_locations={
+            "80NSSC25C0050": {
+                "Recipient Location": {
+                    "address_line1": "1 ROCKET RD",
+                    "address_line2": "SUITE 100",
+                    "city_name": "HAWTHORNE",
+                    "state_code": "CA",
+                    "zip5": "90250",
+                },
+                # As on the wire: a POP object simply has no address_line keys.
+                "Primary Place of Performance": {
+                    "city_name": "PASADENA",
+                    "state_code": "CA",
+                    "zip5": "91109",
+                },
+            }
+        },
+    )
+    (result,) = fetch_terminations(client, today=TODAY)
+    assert result.recipient_location.address1 == "1 ROCKET RD"
+    assert result.recipient_location.address2 == "SUITE 100"
+    assert result.recipient_location.city == "HAWTHORNE"
+    assert result.recipient_location.state == "CA"
+    assert result.recipient_location.zip == "90250"
+    assert result.pop_location.address1 == ""
+    assert result.pop_location.address2 == ""
+    assert result.pop_location.city == "PASADENA"
+    assert result.pop_location.state == "CA"
+    assert result.pop_location.zip == "91109"
+
+
+def test_an_idv_vehicle_types_as_idv_and_is_described_through_the_idv_category():
+    # An IDV vehicle's own transactions do not reliably carry a type the ORM's
+    # grouping recognises, and the "contract" default would file the award
+    # under the wrong award-search category - which returns nothing, and left
+    # a blank description on 25 live awards. The generated id's CONT_IDV_
+    # prefix has the last word, exactly as the mirror door types the same rows.
+    client = FakeClient(
+        contract_rows=[
+            row(
+                "80NSSC24AA010",
+                action_date="2026-07-01",
+                action_type="F",
+                generated="CONT_IDV_80NSSC24AA010_8000",
+            )
+        ],
+        award_descriptions={"80NSSC24AA010": "CHANGE MANAGEMENT SUPPORT BPA"},
+    )
+    (result,) = fetch_terminations(client, today=TODAY)
+    assert result.award_type == "idv"
+    assert result.award_description == "CHANGE MANAGEMENT SUPPORT BPA"
+    assert [s.categories for s in client.award_searches] == [["idvs"]]
 
 
 # ---------------------------------------------------------------------------
