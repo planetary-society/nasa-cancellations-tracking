@@ -432,10 +432,14 @@ def group_by_award(txns) -> dict[str, list[Txn]]:
 def accept_award(txns: Sequence[Txn]) -> Txn | None:
     """The award's operative termination, or None if it has none.
 
-    Scans the award's history chronologically: an explicit termination sets the
-    anchor, and a later reversal or vacatur clears it. So terminate->rescind
-    drops out entirely, while terminate->rescind->terminate stays and reports
-    the SECOND termination.
+    Scans the award's history chronologically: the FIRST explicit termination
+    sets the anchor, and a later reversal or vacatur clears it. The date of
+    record is when the termination was ISSUED - 80GSFC23CA001's mod 00009
+    carried the F code on 2025-05-01, and the year of settlement mods that
+    followed does not move that date - so later explicit terminations never
+    displace a standing anchor. terminate->rescind drops out entirely, while
+    terminate->rescind->terminate stays and reports the second termination:
+    the first one that still stands.
 
     Reversals are tested first because a rescission names what it rescinds:
     "rescission of the stop work order" matches the termination vocabulary too,
@@ -445,7 +449,7 @@ def accept_award(txns: Sequence[Txn]) -> Txn | None:
     for txn in sorted(txns, key=lambda t: (t.action_date or date.min, t.sort_key)):
         if is_reversal(txn.description) or is_vacatur(txn.description):
             anchor = None
-        elif is_explicit_termination(txn):
+        elif anchor is None and is_explicit_termination(txn):
             anchor = txn
     return anchor
 

@@ -84,6 +84,16 @@ def test_terminate_rescind_terminate_keeps_the_second_termination():
     assert accept_award([second, rescind, first]) is second
 
 
+def test_repeated_terminations_without_a_reversal_report_the_first():
+    # The date of record is when the termination was ISSUED. 80GSFC23CA001's
+    # mod 00009 carried the F code on 2025-05-01; a year of settlement mods
+    # followed, and reporting the last of them pushed the published date to
+    # 2026-07-30. The anchor is the first explicit termination still standing.
+    issued = txn("2025-05-01", action_type="F", description="TERMINATE FOR CONVENIENCE")
+    settled = txn("2026-07-30", action_type="F", description="PARTIAL TERMINATION SETTLEMENT")
+    assert accept_award([settled, issued]) is issued
+
+
 def test_vacatur_clears_the_termination():
     rows = [
         txn("2025-06-01", action_type="F", description="TERMINATE FOR CONVENIENCE"),
