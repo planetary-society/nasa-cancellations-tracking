@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from nasatrack.schema import (
+    CancellationAwardsByFiscalYearRow,
     DogeClaimRow,
     PopChangeRow,
     TerminationRow,
@@ -230,6 +231,23 @@ def test_round_trip(tmp_path, rows, row_type):
     path = tmp_path / "rows.csv"
     write_csv(path, rows)
     assert read_csv(path, row_type) == rows
+
+
+def test_round_trip_with_display_column_labels(tmp_path):
+    path = tmp_path / "stats.csv"
+    rows = [CancellationAwardsByFiscalYearRow(2025, 74, 19, 88)]
+    labels = {
+        "fiscal_year": "FY",
+        "action_code_cancellation_awards": "Action Code Cancellation Awards",
+        "keyword_cancellation_awards": "Keyword Cancellation Awards",
+        "action_code_or_keyword_cancellation_awards": (
+            "Action Code or Keyword Cancellation Awards"
+        ),
+    }
+
+    write_csv(path, rows, column_labels=labels)
+
+    assert read_csv(path, CancellationAwardsByFiscalYearRow, column_labels=labels) == rows
 
 
 def test_round_trip_after_newline_collapse(tmp_path):

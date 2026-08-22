@@ -14,6 +14,29 @@ Each run derives three CSVs in `output/` — no accumulated state; `git diff` is
 | `output/doge_claims.csv`  | Every NASA claim on DOGE's wall of receipts, beside what USASpending factually says about the same award: found or not, explicit termination transaction or not, latest action, current obligation and end date, type code, recipient/POP locations and districts, potential value. No verdicts.                                                                                                                                                      |
 | `output/pop_changes.csv`  | A lead sheet, not a termination list: awards whose period of performance was pulled back more than 90 days — original, longest, and current end dates per award, plus the award's current USASpending summary, type code, locations/districts, and amounts. Mirror-only.                                                                                                                                                                              |
 
+The standalone `cancellations_for_convenience_by_fiscal_year.py` report counts distinct NASA
+awards carrying cancellation signals from FY2010 onward. It reports awards with an FPDS `F`
+action-code match, awards with a keyword match from the tracker's shared
+termination-for-convenience vocabulary across FPDS and FABS, and their deduplicated union. The
+keyword count excludes termination-for-cause/default language; an award with multiple matching
+transactions in one fiscal year appears once in each applicable column and once in the union. It
+writes `output/cancellations_for_convenience_awards_by_fiscal_year.csv`; years with no matches
+are zero-filled and the current fiscal year reflects the local mirror's partial snapshot. These
+are signal-bearing award counts, not adjudicated cancellation events: unlike `terminations.csv`,
+this historical report does not clear later reversals/vacaturs or apply human overrides.
+
+Consequently, the fiscal-year union should not be expected to equal the row count in
+`output/terminations.csv`. The fiscal-year report asks whether an award carried any qualifying
+signal during each full fiscal year; FY2025 therefore includes October 1, 2024 through January
+19, 2025, before the main tracker's January 20 start, and the same award can appear in more than
+one fiscal year if it receives another signal later. `terminations.csv` instead publishes one
+current operative termination per award: a later reversal or vacatur clears the earlier signal,
+a later re-termination replaces the earlier transaction as the award's anchor, and human
+exclusions are applied. It also merges the newer API part with the monthly mirror part, whereas
+the historical report uses only the local mirror. Use the fiscal-year report to measure the
+broad incidence of cancellation signals and `terminations.csv` for the current adjudicated list;
+align action dates, fiscal years, and source snapshot before reconciling their counts.
+
 ## The two doors
 
 Both doors normalize into one `Txn` shape and run the **same** Python acceptance logic
@@ -46,6 +69,7 @@ rows, never add them.
 uv sync --group dev     # or: just sync
 just --list             # lint / test / api / mirror / doge / merge / all
 uv run nasatrack daily  # what CI runs: doge + api + merge
+uv run python cancellations_for_convenience_by_fiscal_year.py
 ```
 
 The mirror needs DB credentials in `.env`; it exits cleanly with a notice when unreachable.

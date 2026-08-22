@@ -91,14 +91,15 @@ def in_window(value) -> bool:
 # cause / for default) are excluded by methodology - contractor failure, not a
 # policy cancellation. FABS (grants) has no equivalent field at all, so grant
 # terminations are language-only.
-TERMINATION_ACTION_CODES: tuple[str, ...] = ("F", "N")
+CANCELLATION_FOR_CONVENIENCE_ACTION_CODE = "F"
+TERMINATION_ACTION_CODES: tuple[str, ...] = (CANCELLATION_FOR_CONVENIENCE_ACTION_CODE, "N")
 
 # Only "F" is trusted on its own. NASA applies "N" to routine administrative
 # actions too - 80JSC026F0015 ("implement the ax-5 mission specific option") and
 # 80JSC026P0010 (a freeze dryer purchase) both carry it - so an N-coded
 # transaction counts only when its description also asserts a termination
 # (decided 2026-08-20; replaces the old mirror-dependent POP-shortening gate).
-STANDALONE_TERMINATION_CODES: tuple[str, ...] = ("F",)
+STANDALONE_TERMINATION_CODES: tuple[str, ...] = (CANCELLATION_FOR_CONVENIENCE_ACTION_CODE,)
 
 # The award types whose transactions carry FPDS action codes.
 FPDS_AWARD_TYPES = ("contract", "idv")
@@ -262,8 +263,11 @@ def pg_regex(*patterns: re.Pattern) -> str:
     return "|".join(pattern.pattern.replace(r"\b", r"\y") for pattern in patterns)
 
 
-# The mirror's text arm keeps CAUSE_TEXT in the net so that the cause
-# definition has one home: SQL fetches those rows, `is_cause` drops them here.
+# The historical statistics need the same positive and exclusion predicates as
+# the Python classifier, while the candidate query deliberately keeps cause in
+# its wider prefilter so `is_cause` remains the final judge there.
+TERMINATION_KEYWORD_SQL = pg_regex(TERM_TEXT)
+CAUSE_TEXT_SQL = pg_regex(CAUSE_TEXT)
 TERMINATION_TEXT_SQL = pg_regex(TERM_TEXT, CAUSE_TEXT)
 
 # Wire strings sent verbatim to the USAspending API as `filters.keywords`; they

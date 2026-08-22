@@ -7,6 +7,7 @@ type it sits in, so `git diff` on an output file shows real changes only.
 
 import csv
 import typing
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from datetime import date
 from decimal import Decimal
@@ -119,6 +120,16 @@ class PopChangeRow:
     transaction_count: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class CancellationAwardsByFiscalYearRow:
+    """Distinct NASA awards carrying cancellation signals in one fiscal year."""
+
+    fiscal_year: int
+    action_code_cancellation_awards: int
+    keyword_cancellation_awards: int
+    action_code_or_keyword_cancellation_awards: int
+
+
 def _render(value) -> str:
     """One value as CSV text: ISO dates, plain Decimals, "" for None, one line."""
     if value is None:
@@ -152,8 +163,13 @@ def _parse(text: str, declared):
     return text
 
 
-def write_csv(path, rows) -> None:
-    """Write pre-sorted rows to `path`. Column order is field order; UTF-8, "\\n"."""
+def write_csv(path, rows, *, column_labels: Mapping[str, str] | None = None) -> None:
+    """Write pre-sorted rows to `path`. Column order is field order; UTF-8, "\\n".
+
+    `column_labels` changes selected display headers without changing the typed
+    dataclass field names used by callers. Existing outputs omit it and retain
+    their field-name headers.
+    """
     rows = list(rows)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,27 +177,40 @@ def write_csv(path, rows) -> None:
         path.write_text("", encoding="utf-8")
         return
     columns = [f.name for f in fields(rows[0])]
+    labels = column_labels or {}
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(columns)
+        writer.writerow([labels.get(column, column) for column in columns])
         for row in rows:
             writer.writerow([_render(getattr(row, column)) for column in columns])
 
 
-def read_csv(path, row_type) -> list:
+def read_csv(
+    path,
+    row_type,
+    *,
+    column_labels: Mapping[str, str] | None = None,
+) -> list:
     """Read rows written by `write_csv` back into `row_type` instances.
 
     Field order and field types both come from `dataclasses.fields`, the same
     source `write_csv` uses - this module declares no `from __future__ import
     annotations`, so `f.type` is the live type object rather than a string.
+    Pass the same `column_labels` mapping used to write display headers.
     """
     path = Path(path)
     # write_csv renders "no rows" as an empty file, which is exactly this.
     if not path.exists() or path.stat().st_size == 0:
         return []
     declared = {f.name: f.type for f in fields(row_type)}
+    labels = column_labels or {}
     with path.open(encoding="utf-8", newline="") as handle:
         return [
-            row_type(**{name: _parse(record[name], hint) for name, hint in declared.items()})
+            row_type(
+                **{
+                    name: _parse(record[labels.get(name, name)], hint)
+                    for name, hint in declared.items()
+                }
+            )
             for record in csv.DictReader(handle)
         ]
