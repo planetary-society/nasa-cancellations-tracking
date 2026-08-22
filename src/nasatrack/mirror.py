@@ -343,24 +343,27 @@ agg AS (
     GROUP BY award_id
     HAVING max(action_date) >= %(window_start)s
 )
-SELECT native_award_id,
-       generated_unique_award_id,
-       award_type_code,
-       is_fpds,
-       recipient_name,
+-- Every agg column is agg-qualified: the joined award_search table carries
+-- some of the same column names (generated_unique_award_id at least), and an
+-- unqualified reference is an AmbiguousColumn error.
+SELECT agg.native_award_id,
+       agg.generated_unique_award_id,
+       agg.award_type_code,
+       agg.is_fpds,
+       agg.recipient_name,
        {AWARD_ROLLUP_COLUMNS_SQL},
-       ends[1] AS original_end_date,
-       max_end_date,
-       ends[array_upper(ends, 1)] AS current_end_date,
-       (max_end_date - ends[array_upper(ends, 1)]) AS days_shortened,
-       last_action_date,
-       transaction_count
+       agg.ends[1] AS original_end_date,
+       agg.max_end_date,
+       agg.ends[array_upper(agg.ends, 1)] AS current_end_date,
+       (agg.max_end_date - agg.ends[array_upper(agg.ends, 1)]) AS days_shortened,
+       agg.last_action_date,
+       agg.transaction_count
 FROM agg
 LEFT JOIN rpt.award_search aws ON aws.award_id = agg.award_id
-WHERE max_end_date - ends[array_upper(ends, 1)] > %(min_days)s
+WHERE agg.max_end_date - agg.ends[array_upper(agg.ends, 1)] > %(min_days)s
   -- The award has to have been pulled back TO a date inside the window; an
   -- award that finished in 2019 is not a lead.
-  AND ends[array_upper(ends, 1)] >= %(window_start)s
+  AND agg.ends[array_upper(agg.ends, 1)] >= %(window_start)s
 ORDER BY days_shortened DESC
 """
 
