@@ -413,16 +413,6 @@ def fetch_pop_changes() -> list[PopChangeRow]:
         ]
 
 
-FISCAL_YEAR_SERIES_CTE = """
-fiscal_years AS (
-    SELECT generate_series(
-        %(start_fiscal_year)s,
-        EXTRACT(YEAR FROM CURRENT_DATE + INTERVAL '3 months')::integer
-    ) AS fy
-)
-"""
-
-
 # ---------------------------------------------------------------------------
 # Query 3: historical NASA termination-for-convenience action counts.
 # ---------------------------------------------------------------------------
@@ -433,7 +423,12 @@ fiscal_years AS (
 # signals reuse criteria.py's shared verdict vocabulary. The action-date bound
 # is required for the mirror's partial indexes; fiscal_year alone is not enough.
 SQL_CANCELLATIONS_FOR_CONVENIENCE_BY_FY = f"""
-WITH {FISCAL_YEAR_SERIES_CTE},
+WITH fiscal_years AS (
+    SELECT generate_series(
+        %(start_fiscal_year)s,
+        EXTRACT(YEAR FROM CURRENT_DATE + INTERVAL '3 months')::integer
+    ) AS fy
+),
 signals AS (
     SELECT source.award_id,
            source.fy,

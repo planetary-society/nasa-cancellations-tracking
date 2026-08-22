@@ -4,6 +4,7 @@ Each subcommand is one door plus the deterministic merge that publishes:
 
     api    fetch -> parts/api_terminations.csv    -> merge   (daily, in CI)
     mirror fetch -> parts/mirror_terminations.csv -> merge   (local, ~monthly)
+           (also writes pop_changes.csv and the fiscal-year counts)
     doge   fetch -> doge_claims.csv                          (independent)
     merge  parts + human overrides -> terminations.csv       (no network)
     daily  doge, then api (which ends in merge)              (what CI runs)
@@ -34,6 +35,7 @@ PARTS_DIR = OUTPUT_DIR / "parts"
 TERMINATIONS_CSV = OUTPUT_DIR / "terminations.csv"
 DOGE_CSV = OUTPUT_DIR / "doge_claims.csv"
 POP_CHANGES_CSV = OUTPUT_DIR / "pop_changes.csv"
+FISCAL_YEAR_CSV = OUTPUT_DIR / "cancellations_for_convenience_awards_by_fiscal_year.csv"
 API_PART = PARTS_DIR / "api_terminations.csv"
 MIRROR_PART = PARTS_DIR / "mirror_terminations.csv"
 MIRROR_RUN = PARTS_DIR / "mirror_run.json"
@@ -141,11 +143,12 @@ def run_mirror(args) -> None:
     if not mirror.is_configured():
         print("mirror not configured on this machine; skipping", file=sys.stderr)
         return
-    # BOTH queries run before ANY file is written. The POP query takes minutes
-    # and can time out; writing the part first would leave a rewritten part
-    # file, a fresh sidecar and a terminations.csv that was never re-merged -
-    # the published file out of sync with the part it claims to come from. A
-    # failure anywhere in this pair leaves the tree exactly as it was.
+    # Every query the published merge depends on runs before ANY file is
+    # written. The POP query takes minutes and can time out; writing the part
+    # first would leave a rewritten part file, a fresh sidecar and a
+    # terminations.csv that was never re-merged - the published file out of
+    # sync with the part it claims to come from. A failure here leaves the
+    # tree exactly as it was.
     try:
         terminated = _part_rows(mirror.fetch_terminated_awards())
         pop_changes = mirror.fetch_pop_changes()
@@ -159,6 +162,11 @@ def run_mirror(args) -> None:
     )
     _write(POP_CHANGES_CSV, pop_changes)
     merge_step()
+    # The fiscal-year counts are mirror-only and never merged, so they sit
+    # outside the sync block above: fetched last, a failure here cannot throw
+    # away the POP query's expensive result. No empty tripwire - the query's
+    # generate_series spine cannot return zero rows.
+    _write(FISCAL_YEAR_CSV, mirror.fetch_cancellations_for_convenience_awards_by_fy())
 
 
 def run_doge(args, client=None) -> None:
@@ -220,9 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
         func=run_api
     )
 
-    sub.add_parser("mirror", help="local mirror door + pop changes, then merge").set_defaults(
-        func=run_mirror
-    )
+    sub.add_parser(
+        "mirror", help="local mirror door + pop changes + fiscal-year counts, then merge"
+    ).set_defaults(func=run_mirror)
 
     sub.add_parser(
         "doge", parents=[refresh], help="DOGE claims with USASpending status"

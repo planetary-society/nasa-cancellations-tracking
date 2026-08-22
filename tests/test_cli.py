@@ -9,11 +9,19 @@ from argparse import Namespace
 
 import pytest
 
-from nasatrack import api, doge
+from nasatrack import api, cli, doge, mirror
 from nasatrack.cli import merge_step, run_api, run_doge
-from nasatrack.schema import TerminationRow, read_csv, write_csv
+from nasatrack.schema import (
+    CancellationAwardsByFiscalYearRow,
+    PopChangeRow,
+    TerminationRow,
+    read_csv,
+    write_csv,
+)
+from tests.test_accept_award import txn
 from tests.test_merge import row
 from tests.test_overrides import write_overrides
+from tests.test_schema import a_pop_change
 
 
 def test_merge_step_publishes_from_the_parts(tmp_path, capsys):
@@ -74,6 +82,40 @@ def test_merge_step_with_no_parts_at_all_refuses_to_publish(tmp_path):
             output=output,
         )
     assert not output.exists()
+
+
+def test_mirror_door_writes_its_three_outputs(monkeypatch, tmp_path, capsys):
+    # The fiscal-year counts are the mirror's third artifact, written from the
+    # same run as the part file and pop_changes.csv, with plain field-name
+    # headers like every output. The merge is stubbed: it reads the committed
+    # parts, which this test has no business touching.
+    monkeypatch.setattr(cli, "MIRROR_PART", tmp_path / "mirror_terminations.csv")
+    monkeypatch.setattr(cli, "MIRROR_RUN", tmp_path / "mirror_run.json")
+    monkeypatch.setattr(cli, "POP_CHANGES_CSV", tmp_path / "pop_changes.csv")
+    monkeypatch.setattr(cli, "FISCAL_YEAR_CSV", tmp_path / "by_fiscal_year.csv")
+    monkeypatch.setattr(cli, "merge_step", lambda: None)
+
+    counts = [
+        CancellationAwardsByFiscalYearRow(2010, 7, 3, 9),
+        CancellationAwardsByFiscalYearRow(2011, 0, 2, 2),
+    ]
+    monkeypatch.setattr(mirror, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        mirror, "fetch_terminated_awards", lambda: [txn("2025-06-01", action_type="F")]
+    )
+    monkeypatch.setattr(mirror, "fetch_pop_changes", lambda: [a_pop_change()])
+    monkeypatch.setattr(mirror, "fetch_cancellations_for_convenience_awards_by_fy", lambda: counts)
+
+    cli.run_mirror(Namespace())
+
+    assert read_csv(tmp_path / "by_fiscal_year.csv", CancellationAwardsByFiscalYearRow) == counts
+    assert len(read_csv(tmp_path / "mirror_terminations.csv", TerminationRow)) == 1
+    assert len(read_csv(tmp_path / "pop_changes.csv", PopChangeRow)) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "mirror_terminations.csv: 1 rows",
+        "pop_changes.csv: 1 rows",
+        "by_fiscal_year.csv: 2 rows",
+    ]
 
 
 def test_an_empty_api_door_refuses_to_publish(monkeypatch):
