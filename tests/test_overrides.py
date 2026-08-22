@@ -34,7 +34,7 @@ def test_excluding_statuses_remove_the_row(status):
 
 
 @pytest.mark.parametrize(
-    "status", ["still_terminated", "closed_out", "descoped", "needs_manual_review"]
+    "status", ["termination_confirmed", "closed_out", "descoped", "needs_manual_review"]
 )
 def test_other_statuses_annotate_and_keep(status):
     rows = [row("CONT_AWD_80NSSC25C0001", source="api", award_id="80NSSC25C0001")]
@@ -47,8 +47,8 @@ def test_an_override_matches_the_award_key_too():
     # The doge/verification files name awards by PIID or FAIN; a mirror-only
     # IDV row can be keyed on the generated id instead.
     rows = [row("CONT_AWD_80NSSC25C0001", source="mirror", award_id="")]
-    kept, _ = apply_overrides(rows, {"CONT_AWD_80NSSC25C0001": "still_terminated"})
-    assert [r.override_status for r in kept] == ["still_terminated"]
+    kept, _ = apply_overrides(rows, {"CONT_AWD_80NSSC25C0001": "termination_confirmed"})
+    assert [r.override_status for r in kept] == ["termination_confirmed"]
 
 
 def test_rows_without_an_override_are_untouched():
@@ -68,11 +68,11 @@ def test_an_unmatched_override_warns_and_never_synthesises_a_row():
 def test_load_overrides_reads_the_human_columns(tmp_path):
     path = write_overrides(
         tmp_path / "dropped_award_status.csv",
-        [("80NSSC19K0326", "vacated"), ("80HQTR24F0072", "still_terminated")],
+        [("80NSSC19K0326", "vacated"), ("80HQTR24F0072", "termination_confirmed")],
     )
     assert load_overrides(path) == {
         "80NSSC19K0326": "vacated",
-        "80HQTR24F0072": "still_terminated",
+        "80HQTR24F0072": "termination_confirmed",
     }
 
 
@@ -87,10 +87,10 @@ def test_the_committed_overrides_file_still_parses():
     overrides = load_overrides(REAL_OVERRIDES)
     assert overrides["80NSSC19K0326"] == "vacated"
     assert overrides["NNK14CA65T"] == "excluded_by_design"
-    assert overrides["80HQTR24F0072"] == "still_terminated"
+    assert overrides["80NSSC24K1264"] == "closed_out"
     # Every status is one this module knows how to act on.
     assert set(overrides.values()) <= EXCLUDING_STATUSES | {
-        "still_terminated",
+        "termination_confirmed",
         "closed_out",
         "descoped",
         "needs_manual_review",

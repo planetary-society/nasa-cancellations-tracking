@@ -158,8 +158,8 @@ OVERRIDE_STATUS_COLUMN = "Tracking Status"
 
 # The statuses that say "this is not an active cancellation": out of scope,
 # vacated by a court, or continued after the flag. Every other status the file
-# uses (still_terminated, closed_out, descoped, needs_manual_review) is an
-# annotation on a row that stays.
+# uses (closed_out, descoped, needs_manual_review) is an annotation on a row
+# that stays.
 EXCLUDING_STATUSES = frozenset({"excluded_by_design", "vacated", "continued"})
 
 

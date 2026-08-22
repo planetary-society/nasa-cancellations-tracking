@@ -30,8 +30,8 @@ class TerminationRow:
     transaction_amount: Decimal | None = None
     transaction_description: str = ""
     award_description: str = ""  # the award's current USASpending summary
-    # The award-level recipient and place-of-performance locations. USAspending
-    # reports no street address for a POP, so there are no pop_address columns.
+    # The award-level recipient and place-of-performance locations; see
+    # criteria.Location for why a POP has no address columns.
     recipient_address1: str = ""
     recipient_address2: str = ""
     recipient_city: str = ""
@@ -71,8 +71,7 @@ class DogeClaimRow:
     latest_description: str = ""
     current_obligation: Decimal | None = None
     current_end_date: date | None = None
-    # The award-level locations, present only when the award was found. A POP
-    # never has street address lines, so there are no pop_address columns.
+    # The award-level locations, present only when the award was found.
     recipient_address1: str = ""
     recipient_address2: str = ""
     recipient_city: str = ""
@@ -99,7 +98,7 @@ class PopChangeRow:
     award_type_code: str = ""  # the explicit USASpending type code
     recipient_name: str = ""
     award_description: str = ""  # the award's current USASpending summary
-    # As on TerminationRow: award-level locations, no POP street address.
+    # As on TerminationRow: the award-level locations.
     recipient_address1: str = ""
     recipient_address2: str = ""
     recipient_city: str = ""

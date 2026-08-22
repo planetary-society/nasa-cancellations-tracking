@@ -150,7 +150,26 @@ def _cursor(statement_timeout_s: int):
 # transaction_search.award_id); its `description` is the award's current
 # summary on USAspending, which the per-transaction descriptions never carry.
 # LEFT JOIN, because a missing rollup row must cost a blank cell, not the
-# award's whole history.
+# award's whole history. Both queries interpolate this same projection, so the
+# two published CSVs cannot drift in what an award's enrichment columns mean -
+# the district COALESCE prefers the CURRENT (post-redistricting) code with the
+# as-reported one as fallback, which is all the public API has.
+AWARD_ROLLUP_COLUMNS_SQL = """COALESCE(aws.description, '') AS award_description,
+       COALESCE(aws.recipient_location_address_line1, '') AS recipient_address1,
+       COALESCE(aws.recipient_location_address_line2, '') AS recipient_address2,
+       COALESCE(aws.recipient_location_city_name, '') AS recipient_city,
+       COALESCE(aws.recipient_location_state_code, '') AS recipient_state,
+       COALESCE(aws.recipient_location_zip5, '') AS recipient_zip,
+       COALESCE(aws.recipient_location_congressional_code_current,
+                aws.recipient_location_congressional_code, '') AS recipient_district,
+       COALESCE(aws.pop_city_name, '') AS pop_city,
+       COALESCE(aws.pop_state_code, '') AS pop_state,
+       COALESCE(aws.pop_zip5, '') AS pop_zip,
+       COALESCE(aws.pop_congressional_code_current,
+                aws.pop_congressional_code, '') AS pop_district,
+       aws.total_obligation AS total_obligated,
+       aws.base_and_all_options_value AS total_potential_value"""
+
 SQL_TERMINATION_CANDIDATES = f"""
 WITH nasa AS (
     SELECT ts.award_id,
@@ -176,23 +195,7 @@ candidates AS (
        OR description ~* %(pattern)s
 )
 SELECT nasa.*,
-       COALESCE(aws.description, '') AS award_description,
-       COALESCE(aws.recipient_location_address_line1, '') AS recipient_address1,
-       COALESCE(aws.recipient_location_address_line2, '') AS recipient_address2,
-       COALESCE(aws.recipient_location_city_name, '') AS recipient_city,
-       COALESCE(aws.recipient_location_state_code, '') AS recipient_state,
-       COALESCE(aws.recipient_location_zip5, '') AS recipient_zip,
-       -- The CURRENT (post-redistricting) district where the rollup has one;
-       -- the as-reported code is the fallback, and is all the public API has.
-       COALESCE(aws.recipient_location_congressional_code_current,
-                aws.recipient_location_congressional_code, '') AS recipient_district,
-       COALESCE(aws.pop_city_name, '') AS pop_city,
-       COALESCE(aws.pop_state_code, '') AS pop_state,
-       COALESCE(aws.pop_zip5, '') AS pop_zip,
-       COALESCE(aws.pop_congressional_code_current,
-                aws.pop_congressional_code, '') AS pop_district,
-       aws.total_obligation AS total_obligated,
-       aws.base_and_all_options_value AS total_potential_value
+       {AWARD_ROLLUP_COLUMNS_SQL}
 FROM nasa
 JOIN candidates USING (award_id)
 LEFT JOIN rpt.award_search aws ON aws.award_id = nasa.award_id
@@ -200,25 +203,19 @@ ORDER BY nasa.award_id, nasa.action_date, nasa.sort_key
 """
 
 
-def _recipient_location(row) -> criteria.Location:
-    """The award's recipient location columns as a `Location`."""
-    return criteria.Location(
-        address1=row["recipient_address1"] or "",
-        address2=row["recipient_address2"] or "",
-        city=row["recipient_city"] or "",
-        state=row["recipient_state"] or "",
-        zip=row["recipient_zip"] or "",
-        district=row["recipient_district"] or "",
-    )
+def _location(row, prefix: str) -> criteria.Location:
+    """The award's `recipient` or `pop` columns as a `Location`.
 
-
-def _pop_location(row) -> criteria.Location:
-    """The award's place-of-performance columns as a `Location` (no street address exists)."""
+    A POP has no address columns (USAspending reports no street address for a
+    place of performance), which the `.get` reads render as "".
+    """
     return criteria.Location(
-        city=row["pop_city"] or "",
-        state=row["pop_state"] or "",
-        zip=row["pop_zip"] or "",
-        district=row["pop_district"] or "",
+        address1=row.get(f"{prefix}_address1") or "",
+        address2=row.get(f"{prefix}_address2") or "",
+        city=row[f"{prefix}_city"] or "",
+        state=row[f"{prefix}_state"] or "",
+        zip=row[f"{prefix}_zip"] or "",
+        district=row[f"{prefix}_district"] or "",
     )
 
 
@@ -243,13 +240,13 @@ def txn_from_row(row) -> Txn:
         ),
         recipient_name=row["recipient_name"] or "",
         action_date=criteria.as_date(row["action_date"]),
-        action_type=str(row["action_type"] or "").strip().upper(),
+        action_type=criteria.code(row["action_type"]),
         modification_number=row["modification_number"] or "",
         description=row["description"] or "",
         award_description=row["award_description"] or "",
-        recipient_location=_recipient_location(row),
-        pop_location=_pop_location(row),
-        award_type_code=str(row["award_type_code"] or "").strip().upper(),
+        recipient_location=_location(row, "recipient"),
+        pop_location=_location(row, "pop"),
+        award_type_code=criteria.code(row["award_type_code"]),
         total_obligated=_decimal(row["total_obligated"]),
         total_potential_value=_decimal(row["total_potential_value"]),
         amount=_decimal(amount),
@@ -351,24 +348,7 @@ SELECT native_award_id,
        award_type_code,
        is_fpds,
        recipient_name,
-       -- The award-level summary and locations, joined exactly as the
-       -- terminations query joins them: LEFT, so a missing rollup row is a
-       -- blank cell, not a vanished lead.
-       COALESCE(aws.description, '') AS award_description,
-       COALESCE(aws.recipient_location_address_line1, '') AS recipient_address1,
-       COALESCE(aws.recipient_location_address_line2, '') AS recipient_address2,
-       COALESCE(aws.recipient_location_city_name, '') AS recipient_city,
-       COALESCE(aws.recipient_location_state_code, '') AS recipient_state,
-       COALESCE(aws.recipient_location_zip5, '') AS recipient_zip,
-       COALESCE(aws.recipient_location_congressional_code_current,
-                aws.recipient_location_congressional_code, '') AS recipient_district,
-       COALESCE(aws.pop_city_name, '') AS pop_city,
-       COALESCE(aws.pop_state_code, '') AS pop_state,
-       COALESCE(aws.pop_zip5, '') AS pop_zip,
-       COALESCE(aws.pop_congressional_code_current,
-                aws.pop_congressional_code, '') AS pop_district,
-       aws.total_obligation AS total_obligated,
-       aws.base_and_all_options_value AS total_potential_value,
+       {AWARD_ROLLUP_COLUMNS_SQL},
        ends[1] AS original_end_date,
        max_end_date,
        ends[array_upper(ends, 1)] AS current_end_date,
@@ -405,7 +385,7 @@ def fetch_pop_changes() -> list[PopChangeRow]:
                     is_fpds=row["is_fpds"],
                 ),
                 recipient_name=row["recipient_name"] or "",
-                award_type_code=str(row["award_type_code"] or "").strip().upper(),
+                award_type_code=criteria.code(row["award_type_code"]),
                 award_description=row["award_description"] or "",
                 recipient_address1=row["recipient_address1"] or "",
                 recipient_address2=row["recipient_address2"] or "",

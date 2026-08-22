@@ -220,19 +220,16 @@ def _enrich_claim(claim: dict, client, today: date) -> DogeClaimRow:
         else None
     )
     period = award.period_of_performance
-    # The lookup is search-backed, so the row already carries the same location
-    # fields the API door's award search reads - no further request, and the
-    # same raw-payload mapping via the shared helper.
-    recipient_location = api.location_from_payload(award.get_value(["Recipient Location"]))
-    pop_location = api.location_from_payload(award.get_value(["Primary Place of Performance"]))
+    # The lookup is search-backed, so the record carries the same fields the
+    # API door's award search reads - one shared mapping, no further request
+    # beyond the detail GET the `category` read above already spent.
+    found = api.award_details_from_award(award)
     return DogeClaimRow(
         **claim,
         usaspending_found=True,
         generated_award_id=award.generated_unique_award_id or "",
         award_type=award_type,
-        # The explicit type code and the potential value live on the award
-        # detail record; the ORM fetches it once, lazily, and caches it.
-        award_type_code=str(award.type or "").strip().upper(),
+        award_type_code=found.award_type_code,
         has_explicit_termination=any(
             is_explicit_termination(
                 api.orm_txn(
@@ -248,19 +245,19 @@ def _enrich_claim(claim: dict, client, today: date) -> DogeClaimRow:
         latest_action_date=latest.action_date if latest else None,
         latest_action_type=(latest.action_type or "") if latest else "",
         latest_description=(latest.transaction_description or "") if latest else "",
-        current_obligation=award.total_obligation,
+        current_obligation=found.total_obligated,
         current_end_date=period.end_date if period else None,
-        recipient_address1=recipient_location.address1,
-        recipient_address2=recipient_location.address2,
-        recipient_city=recipient_location.city,
-        recipient_state=recipient_location.state,
-        recipient_zip=recipient_location.zip,
-        recipient_district=recipient_location.district,
-        pop_city=pop_location.city,
-        pop_state=pop_location.state,
-        pop_zip=pop_location.zip,
-        pop_district=pop_location.district,
-        total_potential_value=award.base_and_all_options,
+        recipient_address1=found.recipient_location.address1,
+        recipient_address2=found.recipient_location.address2,
+        recipient_city=found.recipient_location.city,
+        recipient_state=found.recipient_location.state,
+        recipient_zip=found.recipient_location.zip,
+        recipient_district=found.recipient_location.district,
+        pop_city=found.pop_location.city,
+        pop_state=found.pop_location.state,
+        pop_zip=found.pop_location.zip,
+        pop_district=found.pop_location.district,
+        total_potential_value=found.total_potential_value,
         checked_date=today,
     )
 

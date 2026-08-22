@@ -32,6 +32,9 @@ from .criteria import (
     has_termination_code,
     mod_sort_key,
 )
+from .criteria import (
+    code as criteria_code,
+)
 
 PAGE_SIZE = 100
 
@@ -121,10 +124,10 @@ def _award_type(row, generated_award_id: str, default: str) -> str:
     CONT_IDV_ rule, and the award-description search files IDVs under a
     different category than contracts.
     """
-    group = get_award_group(row.type or "") or get_award_group(row.award_type or "") or default
-    if group == "grant":
-        return "grant"
-    return award_type(generated_id=generated_award_id, is_fpds=True)
+    is_grant = (
+        get_award_group(row.type or "") or get_award_group(row.award_type or "") or default
+    ) == "grant"
+    return award_type(generated_id=generated_award_id, is_fpds=not is_grant)
 
 
 def orm_txn(
@@ -147,10 +150,7 @@ def orm_txn(
         award_type=award_type,
         recipient_name=row.recipient_name or "",
         action_date=as_date(row.action_date),
-        # Normalised exactly as mirror.txn_from_row normalises it, so Txn's
-        # action_type has one contract and terminations.csv cannot publish two
-        # spellings of the same code.
-        action_type=str(row.action_type or "").strip().upper(),
+        action_type=criteria_code(row.action_type),
         modification_number=row.modification_number or "",
         description=row.transaction_description or "",
         amount=row.federal_action_obligation,
@@ -326,17 +326,41 @@ def location_from_payload(data) -> Location:
 
 @dataclass(frozen=True, slots=True)
 class AwardDetails:
-    """The award-level enrichment one award search row carries."""
+    """The award-level enrichment one award search row carries.
 
-    description: str = ""
+    Field names deliberately match `Txn`'s, so attaching is a mechanical copy.
+    """
+
+    award_description: str = ""
     recipient_location: Location = EMPTY_LOCATION
     pop_location: Location = EMPTY_LOCATION
-    type_code: str = ""  # the explicit USAspending award type code ("A", "IDV_C", "02", ...)
+    award_type_code: str = ""  # the explicit USAspending code ("A", "IDV_C", "02", ...)
     total_obligated: Decimal | None = None
     total_potential_value: Decimal | None = None
 
 
-_EMPTY_DETAILS = AwardDetails()
+def award_details_from_award(award) -> AwardDetails:
+    """One ORM award record's enrichment fields, however the award was found.
+
+    Search results and `find_by_award_id` lookups carry the same field set, so
+    every door that turns an award record into published enrichment - the
+    terminations door here, the DOGE door in doge.py - maps it in exactly one
+    place. The raw search fields are used rather than the ORM's accessors,
+    which title-case the text away from what the mirror door publishes.
+    """
+    return AwardDetails(
+        award_description=str(award.get_value(["Description", "description"]) or ""),
+        recipient_location=location_from_payload(award.get_value(["Recipient Location"])),
+        pop_location=location_from_payload(award.get_value(["Primary Place of Performance"])),
+        # "Award Amount" rides on the search row, so this is free.
+        total_obligated=award.total_obligation,
+        # The type code and the potential value live only on the award detail
+        # record: ONE lazy GET per award serves both (the ORM caches the detail
+        # payload after the first access). Grants come back with a null
+        # potential value - FABS has no such concept - a blank cell.
+        award_type_code=criteria_code(award.type),
+        total_potential_value=award.base_and_all_options,
+    )
 
 
 def _award_details(client, txns) -> dict[str, AwardDetails]:
@@ -374,22 +398,7 @@ def _award_details(client, txns) -> dict[str, AwardDetails]:
             .order_by("Award ID", "asc")
         )
         for award in query.all():
-            found = AwardDetails(
-                description=str(award.get_value(["Description", "description"]) or ""),
-                recipient_location=location_from_payload(award.get_value(["Recipient Location"])),
-                pop_location=location_from_payload(
-                    award.get_value(["Primary Place of Performance"])
-                ),
-                # "Award Amount" rides on the search row, so this is free.
-                total_obligated=award.total_obligation,
-                # The type code and the potential value live only on the award
-                # detail record: ONE lazy GET per award serves both (the ORM
-                # caches the detail payload after the first access). Grants
-                # come back with a null potential value - FABS has no such
-                # concept - which publishes as a blank cell.
-                type_code=str(award.type or "").strip().upper(),
-                total_potential_value=award.base_and_all_options,
-            )
+            found = award_details_from_award(award)
             for key in (
                 award.get_value(["generated_unique_award_id", "generated_internal_id"]),
                 award.get_value(["Award ID"]),
@@ -397,6 +406,25 @@ def _award_details(client, txns) -> dict[str, AwardDetails]:
                 if key:
                     details[str(key)] = found
     return details
+
+
+def _with_award_details(client, txns) -> list[Txn]:
+    """These transactions with their awards' enrichment fields attached."""
+    details = _award_details(client, txns)
+
+    def enriched(txn: Txn) -> Txn:
+        found = details.get(txn.generated_award_id) or details.get(txn.award_id) or AwardDetails()
+        return replace(
+            txn,
+            award_description=found.award_description,
+            recipient_location=found.recipient_location,
+            pop_location=found.pop_location,
+            award_type_code=found.award_type_code,
+            total_obligated=found.total_obligated,
+            total_potential_value=found.total_potential_value,
+        )
+
+    return [enriched(txn) for txn in txns]
 
 
 # ---------------------------------------------------------------------------
@@ -453,18 +481,4 @@ def fetch_terminations(client=None, *, lookback_days: int = 120, today=None) -> 
 
         rejudged = (accept_award(groups[key]) for key in anchored)
         accepted = [txn for txn in rejudged if txn is not None]
-        details = _award_details(client, accepted)
-
-    def enriched(txn: Txn) -> Txn:
-        found = details.get(txn.generated_award_id) or details.get(txn.award_id) or _EMPTY_DETAILS
-        return replace(
-            txn,
-            award_description=found.description,
-            recipient_location=found.recipient_location,
-            pop_location=found.pop_location,
-            award_type_code=found.type_code,
-            total_obligated=found.total_obligated,
-            total_potential_value=found.total_potential_value,
-        )
-
-    return [enriched(txn) for txn in accepted]
+        return _with_award_details(client, accepted)

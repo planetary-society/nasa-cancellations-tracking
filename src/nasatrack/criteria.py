@@ -112,6 +112,15 @@ FPDS_AWARD_TYPES = ("contract", "idv")
 _FALLBACK_KEY_PREFIX = "PIID:"
 
 
+def code(value) -> str:
+    """A wire code normalised for publication: trimmed, uppercased, "" for None.
+
+    Every published code column - FPDS action types, award type codes - goes
+    through here, so one door cannot publish "idv_c" next to another's "IDV_C".
+    """
+    return str(value or "").strip().upper()
+
+
 def award_key(generated_id, native_id) -> str:
     """The key both doors group an award's transactions under.
 
