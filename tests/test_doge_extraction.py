@@ -266,6 +266,29 @@ def test_enrichment_carries_the_award_locations():
     assert enriched.pop_zip == "91109"
 
 
+def test_a_vacated_termination_is_reported_and_keeps_refreshing():
+    # The pair (terminated, vacated) is published as facts; and a vacated
+    # award is alive again, so unlike a standing termination it stays on the
+    # refresh cadence - frozen columns would report a court-undone termination
+    # as if it still stood (80NSSC21K1443's shape).
+    client = FakeClient(
+        FakeAward(
+            transactions=[
+                FakeTransaction(date(2025, 5, 12), "B", "Termination for convenience agreement"),
+                FakeTransaction(
+                    date(2026, 2, 5), "B", "The termination has been vacated and set aside", mod="9"
+                ),
+            ]
+        )
+    )
+    (enriched,) = doge.enrich([_claim()], client, today=date(2026, 8, 22))
+    assert enriched.has_explicit_termination is True
+    assert enriched.termination_vacated is True
+    assert not doge.is_settled(enriched, date(2026, 8, 22))
+    # Once the award's own runway ends, there is nothing left to refresh.
+    assert doge.is_settled(enriched, date(2026, 10, 1))
+
+
 def test_a_settled_terminated_row_is_never_re_enriched():
     # Explicitly terminated: nothing USASpending says can change the row, so
     # even a checked_date far past refresh_days carries over with no ORM call.

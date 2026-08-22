@@ -59,6 +59,7 @@ DOGE_COLUMNS = [
     "award_type",
     "award_type_code",
     "has_explicit_termination",
+    "termination_vacated",
     "latest_action_date",
     "latest_action_type",
     "latest_description",

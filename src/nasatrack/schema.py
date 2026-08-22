@@ -65,6 +65,10 @@ class DogeClaimRow:
     award_type: str = ""
     award_type_code: str = ""  # the explicit USASpending type code, when found
     has_explicit_termination: bool = False
+    # A transaction vacating the termination exists. Facts, not a verdict: the
+    # pair (terminated, vacated) lets the reader see a court-undone termination
+    # without cross-referencing terminations.csv, which excludes such awards.
+    termination_vacated: bool = False
     latest_action_date: date | None = None
     latest_action_type: str = ""
     latest_description: str = ""

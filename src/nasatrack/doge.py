@@ -20,7 +20,7 @@ from usaspending import USASpendingClient
 from usaspending.models import get_award_group
 
 from . import api
-from .criteria import as_date, is_explicit_termination
+from .criteria import as_date, is_explicit_termination, is_vacatur
 from .schema import DogeClaimRow
 
 DOGE_CONTRACTS_ENDPOINT = "https://api.doge.gov/savings/contracts"
@@ -242,6 +242,11 @@ def _enrich_claim(claim: dict, client, today: date) -> DogeClaimRow:
             )
             for txn in transactions
         ),
+        # A raw fact like the one above, and tested per description as the
+        # vocabulary requires - never against a concatenation.
+        termination_vacated=any(
+            is_vacatur(txn.transaction_description or "") for txn in transactions
+        ),
         latest_action_date=latest.action_date if latest else None,
         latest_action_type=(latest.action_type or "") if latest else "",
         latest_description=(latest.transaction_description or "") if latest else "",
@@ -269,12 +274,14 @@ def is_settled(row: DogeClaimRow, today: date) -> bool:
     performance has already ended, is done changing - so its row never needs
     re-enrichment. (A settled termination that later gets reinstated would go
     unnoticed; accepting that is what keeps the daily run off USASpending for
-    the bulk of the corpus.) A not-found row is never settled: the award may
-    simply not have reached USASpending yet.
+    the bulk of the corpus.) A VACATED termination is the opposite of done: the
+    award is alive again and its facts keep moving, so it stays on the refresh
+    cadence until its period of performance actually ends. A not-found row is
+    never settled: the award may simply not have reached USASpending yet.
     """
     if not row.usaspending_found:
         return False
-    if row.has_explicit_termination:
+    if row.has_explicit_termination and not row.termination_vacated:
         return True
     return row.current_end_date is not None and row.current_end_date < today
 
