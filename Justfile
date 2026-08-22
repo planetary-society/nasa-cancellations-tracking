@@ -17,8 +17,10 @@ test:
 api:
     uv run nasatrack api
 
+# The fiscal-year report reads the same local mirror, so it refreshes with it.
 mirror:
     uv run nasatrack mirror
+    uv run python cancellations_for_convenience_by_fiscal_year.py
 
 doge:
     uv run nasatrack doge
