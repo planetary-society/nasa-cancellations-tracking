@@ -111,26 +111,34 @@ def test_mirror_door_writes_its_three_outputs(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "FISCAL_YEAR_CSV", tmp_path / "by_fiscal_year.csv")
     monkeypatch.setattr(cli, "merge_step", lambda: None)
 
-    counts = [
-        CancellationAwardsByFiscalYearRow(2010, 7, 3, 9),
-        CancellationAwardsByFiscalYearRow(2011, 0, 2, 2),
-    ]
     monkeypatch.setattr(mirror, "is_configured", lambda: True)
     monkeypatch.setattr(
         mirror, "fetch_terminated_awards", lambda: [txn("2025-06-01", action_type="F")]
     )
     monkeypatch.setattr(mirror, "fetch_pop_changes", lambda: [a_pop_change()])
-    monkeypatch.setattr(mirror, "fetch_cancellations_for_convenience_awards_by_fy", lambda: counts)
+    # The FY report's history fetch: capture its bounds, serve one termination.
+    history_calls = []
+
+    def fake_history(**kwargs):
+        history_calls.append(kwargs)
+        return [txn("2025-06-01", action_type="F")]
+
+    monkeypatch.setattr(mirror, "fetch_termination_txns", fake_history)
 
     cli.run_mirror(Namespace())
 
-    assert read_csv(tmp_path / "by_fiscal_year.csv", CancellationAwardsByFiscalYearRow) == counts
+    assert history_calls == [
+        {"window_start": "2009-10-01", "timeout_s": mirror.FY_HISTORY_TIMEOUT_S}
+    ]
+    counts = read_csv(tmp_path / "by_fiscal_year.csv", CancellationAwardsByFiscalYearRow)
+    assert counts[0] == CancellationAwardsByFiscalYearRow(fiscal_year=2010, terminated_awards=0)
+    assert {r.fiscal_year: r.terminated_awards for r in counts}[2025] == 1
     assert len(read_csv(tmp_path / "mirror_terminations.csv", TerminationRow)) == 1
     assert len(read_csv(tmp_path / "pop_changes.csv", PopChangeRow)) == 1
     assert capsys.readouterr().out.splitlines() == [
         "mirror_terminations.csv: 1 rows",
         "pop_changes.csv: 1 rows",
-        "by_fiscal_year.csv: 2 rows",
+        "by_fiscal_year.csv: 17 rows",
     ]
 
 

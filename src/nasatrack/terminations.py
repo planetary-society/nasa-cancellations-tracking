@@ -15,7 +15,7 @@ from pathlib import Path
 
 from nasatrack import criteria
 from nasatrack.criteria import Txn
-from nasatrack.schema import TerminationRow
+from nasatrack.schema import CancellationAwardsByFiscalYearRow, TerminationRow
 
 # ---------------------------------------------------------------------------
 # One transaction as one output row
@@ -257,3 +257,42 @@ def partition_descoped(rows) -> tuple[list[TerminationRow], list[TerminationRow]
     for row in rows:
         (descoped if is_descoped(row) else kept).append(row)
     return kept, descoped
+
+
+# ---------------------------------------------------------------------------
+# The historical fiscal-year report
+# ---------------------------------------------------------------------------
+
+
+def count_by_fiscal_year(
+    txns, overrides: dict[str, str] | None = None, *, start_fiscal_year: int, today: date
+) -> list[CancellationAwardsByFiscalYearRow]:
+    """Distinct terminated awards per fiscal year, adjudicated as terminations.csv is.
+
+    The same pipeline the published list goes through - `accept_award` with the
+    window widened to the report's start, the human overrides, the de-scope
+    routing - with each award counted once, in the fiscal year of its anchor
+    transaction. `txns`, `overrides` and `today` all come from the caller:
+    this module reads no network, no files and no clock.
+
+    Zero-filled through `today`'s fiscal year, whose count is a partial-year
+    figure by construction.
+    """
+    window_start = date(start_fiscal_year - 1, 10, 1)
+    anchors = (
+        criteria.accept_award(group, window_start=window_start)
+        for group in criteria.group_by_award(txns).values()
+    )
+    rows = [txn_to_row(anchor) for anchor in anchors if anchor is not None]
+    rows, _ = apply_overrides(rows, overrides or {})
+    rows, _ = partition_descoped(rows)
+
+    counts: dict[int | None, int] = {}
+    for row in rows:
+        fy = criteria.fiscal_year(row.action_date)
+        counts[fy] = counts.get(fy, 0) + 1
+
+    return [
+        CancellationAwardsByFiscalYearRow(fiscal_year=fy, terminated_awards=counts.get(fy, 0))
+        for fy in range(start_fiscal_year, criteria.fiscal_year(today) + 1)
+    ]

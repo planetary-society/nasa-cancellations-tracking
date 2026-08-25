@@ -124,12 +124,10 @@ class PopChangeRow:
 
 @dataclass(frozen=True, slots=True)
 class CancellationAwardsByFiscalYearRow:
-    """Distinct NASA awards carrying cancellation signals in one fiscal year."""
+    """Adjudicated terminations for convenience anchored in one fiscal year (never signals)."""
 
     fiscal_year: int
-    action_code_cancellation_awards: int
-    keyword_cancellation_awards: int
-    action_code_or_keyword_cancellation_awards: int
+    terminated_awards: int
 
 
 def _render(value) -> str:

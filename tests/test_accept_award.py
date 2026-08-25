@@ -12,11 +12,19 @@ from nasatrack.criteria import (
 from tests.test_descope import DESCOPE_NOTICE
 
 
-def txn(day, *, action_type="", description="", sort_key="", award_type="contract"):
+def txn(
+    day,
+    *,
+    action_type="",
+    description="",
+    sort_key="",
+    award_type="contract",
+    award_id="80NSSC25C0001",
+):
     return Txn(
-        award_key="80NSSC25C0001",
-        award_id="80NSSC25C0001",
-        generated_award_id="CONT_AWD_80NSSC25C0001",
+        award_key=f"CONT_AWD_{award_id}",
+        award_id=award_id,
+        generated_award_id=f"CONT_AWD_{award_id}",
         award_type=award_type,
         recipient_name="ACME AEROSPACE",
         action_date=date.fromisoformat(day),
@@ -156,6 +164,15 @@ def test_vacatur_clears_the_termination():
 def test_pre_window_termination_is_not_accepted():
     row = txn("2025-01-19", action_type="F", description="TERMINATE FOR CONVENIENCE")
     assert accept_award([row]) is None
+
+
+def test_the_window_is_a_parameter_for_the_historical_report():
+    # The fiscal-year report adjudicates back to FY2010 with the SAME verdict;
+    # only the bound moves. The default stays the tracking window, so no door
+    # can accept a pre-window award by accident.
+    row = txn("2010-03-15", action_type="F", description="TERMINATE FOR CONVENIENCE")
+    assert accept_award([row]) is None
+    assert accept_award([row], window_start=date(2009, 10, 1)) is row
 
 
 def test_reversal_before_the_termination_does_not_clear_it():

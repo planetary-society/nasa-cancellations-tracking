@@ -15,14 +15,13 @@ never interpolated into the SQL text.
 
 import os
 from contextlib import contextmanager
-from datetime import date
 from decimal import Decimal
 
 from dotenv import load_dotenv
 
 from nasatrack import criteria
 from nasatrack.criteria import Txn
-from nasatrack.schema import CancellationAwardsByFiscalYearRow, PopChangeRow
+from nasatrack.schema import PopChangeRow
 
 # Primary form: one full postgresql:// string.
 DSN_ENV_VAR = "DATABASE_URI"
@@ -45,7 +44,9 @@ CONNECT_TIMEOUT_S = 10
 # Measured on this mirror. Failing loud means failing, not hanging.
 TERMINATIONS_TIMEOUT_S = 120
 POP_CHANGES_TIMEOUT_S = 600
-CANCELLATION_ACTION_COUNTS_TIMEOUT_S = 120
+# The fiscal-year report's candidate scan covers all NASA history since
+# FY2010, not the 19-month window TERMINATIONS_TIMEOUT_S was measured on.
+FY_HISTORY_TIMEOUT_S = 600
 
 
 class LocalMirrorUnavailableError(RuntimeError):
@@ -255,17 +256,24 @@ def txn_from_row(row) -> Txn:
     )
 
 
-def fetch_termination_txns() -> list[Txn]:
-    """Every in-window transaction of every candidate award, oldest first.
+def fetch_termination_txns(
+    *,
+    window_start: str = criteria.WINDOW_START_ISO,
+    timeout_s: int = TERMINATIONS_TIMEOUT_S,
+) -> list[Txn]:
+    """Every since-`window_start` transaction of every candidate award, oldest first.
 
     Candidates only - this is the SQL prefilter's output, not a verdict. The
-    caller runs `criteria.accept_award` over each award's transactions.
+    caller runs `criteria.accept_award` over each award's transactions. The
+    defaults are the tracking-window door's; the historical fiscal-year report
+    passes its own earlier bound and a longer timeout, since the candidate scan
+    grows with the window.
     """
-    with _cursor(TERMINATIONS_TIMEOUT_S) as cur:
+    with _cursor(timeout_s) as cur:
         cur.execute(
             SQL_TERMINATION_CANDIDATES,
             {
-                "window_start": criteria.WINDOW_START_ISO,
+                "window_start": window_start,
                 "codes": list(criteria.TERMINATION_ACTION_CODES),
                 "pattern": criteria.TERMINATION_TEXT_SQL,
             },
@@ -408,105 +416,6 @@ def fetch_pop_changes() -> list[PopChangeRow]:
                 days_shortened=int(row["days_shortened"]),
                 last_action_date=criteria.as_date(row["last_action_date"]),
                 transaction_count=int(row["transaction_count"]),
-            )
-            for row in cur.fetchall()
-        ]
-
-
-# ---------------------------------------------------------------------------
-# Query 3: historical NASA termination-for-convenience action counts.
-# ---------------------------------------------------------------------------
-
-# This is action grain by design: one transaction_search row is one reported
-# action. The action-code signal is FPDS-only because FABS has no reason-for-
-# modification field; the keyword signal includes both FPDS and FABS. Both
-# signals reuse criteria.py's shared verdict vocabulary. The action-date bound
-# is required for the mirror's partial indexes; fiscal_year alone is not enough.
-#
-# The keyword arm carries both exclusions the language classifier applies -
-# cause/default and de-scope - so a "stop work notice ... intent to descope"
-# row cannot inflate a fiscal year's count with a partial pull-back. The
-# action-code arm carries neither: an F code is the reported termination act
-# whatever prose accompanies it, and code "F" itself reads "TERMINATE FOR
-# CONVENIENCE (COMPLETE OR PARTIAL)".
-SQL_CANCELLATIONS_FOR_CONVENIENCE_BY_FY = f"""
-WITH fiscal_years AS (
-    SELECT generate_series(
-        %(start_fiscal_year)s,
-        EXTRACT(YEAR FROM CURRENT_DATE + INTERVAL '3 months')::integer
-    ) AS fy
-),
-signals AS (
-    SELECT source.award_id,
-           source.fy,
-           source.is_fpds IS TRUE
-               AND source.action_type = ANY(%(action_codes)s) AS by_action_code,
-           source.description ~* %(keyword_pattern)s
-               AND source.description !~* %(cause_pattern)s
-               AND source.description !~* %(descope_pattern)s AS by_keyword
-    FROM (
-        SELECT ts.award_id,
-               ts.fiscal_year AS fy,
-               ts.is_fpds,
-               ts.action_type,
-               COALESCE(ts.transaction_description, '') AS description
-        FROM rpt.transaction_search ts
-        WHERE ts.awarding_agency_id = {criteria.NASA_AGENCY_ID}
-          AND ts.action_date >= %(start_date)s
-          AND ts.action_date <= CURRENT_DATE
-          AND ts.fiscal_year >= %(start_fiscal_year)s
-    ) AS source
-),
-cancellations AS (
-    SELECT fy,
-           count(DISTINCT award_id) FILTER (WHERE by_action_code)
-               AS action_code_cancellation_awards,
-           count(DISTINCT award_id) FILTER (WHERE by_keyword)
-               AS keyword_cancellation_awards,
-           count(DISTINCT award_id) FILTER (WHERE by_action_code OR by_keyword)
-               AS action_code_or_keyword_cancellation_awards
-    FROM signals
-    WHERE by_action_code OR by_keyword
-    GROUP BY fy
-)
-SELECT fiscal_years.fy,
-       COALESCE(cancellations.action_code_cancellation_awards, 0)
-           AS action_code_cancellation_awards,
-       COALESCE(cancellations.keyword_cancellation_awards, 0)
-           AS keyword_cancellation_awards,
-       COALESCE(cancellations.action_code_or_keyword_cancellation_awards, 0)
-           AS action_code_or_keyword_cancellation_awards
-FROM fiscal_years
-LEFT JOIN cancellations USING (fy)
-ORDER BY fiscal_years.fy
-"""
-
-
-def fetch_cancellations_for_convenience_awards_by_fy(
-    start_fiscal_year: int = 2010,
-) -> list[CancellationAwardsByFiscalYearRow]:
-    """Count distinct NASA awards carrying code, keyword, or either signal by FY."""
-    start_date = date(start_fiscal_year - 1, 10, 1)
-    with _cursor(CANCELLATION_ACTION_COUNTS_TIMEOUT_S) as cur:
-        cur.execute(
-            SQL_CANCELLATIONS_FOR_CONVENIENCE_BY_FY,
-            {
-                "start_date": start_date,
-                "start_fiscal_year": start_fiscal_year,
-                "action_codes": list(criteria.STANDALONE_TERMINATION_CODES),
-                "keyword_pattern": criteria.TERMINATION_KEYWORD_SQL,
-                "cause_pattern": criteria.CAUSE_TEXT_SQL,
-                "descope_pattern": criteria.DESCOPE_TEXT_SQL,
-            },
-        )
-        return [
-            CancellationAwardsByFiscalYearRow(
-                fiscal_year=int(row["fy"]),
-                action_code_cancellation_awards=int(row["action_code_cancellation_awards"]),
-                keyword_cancellation_awards=int(row["keyword_cancellation_awards"]),
-                action_code_or_keyword_cancellation_awards=int(
-                    row["action_code_or_keyword_cancellation_awards"]
-                ),
             )
             for row in cur.fetchall()
         ]

@@ -22,7 +22,7 @@ and the mirror's staleness line go to stderr.
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from usaspending import USASpendingClient
@@ -38,6 +38,7 @@ DESCOPED_CSV = OUTPUT_DIR / "descoped.csv"
 DOGE_CSV = OUTPUT_DIR / "doge_claims.csv"
 POP_CHANGES_CSV = OUTPUT_DIR / "pop_changes.csv"
 FISCAL_YEAR_CSV = OUTPUT_DIR / "cancellations_for_convenience_awards_by_fiscal_year.csv"
+FISCAL_YEAR_START = 2010
 API_PART = PARTS_DIR / "api_terminations.csv"
 MIRROR_PART = PARTS_DIR / "mirror_terminations.csv"
 MIRROR_RUN = PARTS_DIR / "mirror_run.json"
@@ -170,11 +171,24 @@ def run_mirror(args) -> None:
     )
     _write(POP_CHANGES_CSV, pop_changes)
     merge_step()
-    # The fiscal-year counts are mirror-only and never merged, so they sit
-    # outside the sync block above: fetched last, a failure here cannot throw
-    # away the POP query's expensive result. No empty tripwire - the query's
-    # generate_series spine cannot return zero rows.
-    _write(FISCAL_YEAR_CSV, mirror.fetch_cancellations_for_convenience_awards_by_fy())
+    # The fiscal-year counts are mirror-only and never merged, so they run
+    # after the sync block. This is a SECOND full candidate scan - a strict
+    # superset of the door's own, back to FY2010 - deliberately sequenced so
+    # its failure, or its runtime, can never cost the part file or the POP
+    # result. No empty tripwire: the report zero-fills every year itself.
+    history = mirror.fetch_termination_txns(
+        window_start=date(FISCAL_YEAR_START - 1, 10, 1).isoformat(),
+        timeout_s=mirror.FY_HISTORY_TIMEOUT_S,
+    )
+    _write(
+        FISCAL_YEAR_CSV,
+        terminations.count_by_fiscal_year(
+            history,
+            terminations.load_overrides(OVERRIDES_CSV),
+            start_fiscal_year=FISCAL_YEAR_START,
+            today=datetime.now(UTC).date(),
+        ),
+    )
 
 
 def run_doge(args, client=None) -> None:

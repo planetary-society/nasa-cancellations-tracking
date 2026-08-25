@@ -227,7 +227,7 @@ def test_decimal_never_uses_exponent_notation(tmp_path):
         ([a_doge_claim(), a_doge_claim(doge_award_id="X", checked_date=None)], DogeClaimRow),
         ([a_pop_change(), a_pop_change(award_id="X", days_shortened=91)], PopChangeRow),
         (
-            [CancellationAwardsByFiscalYearRow(2010, 7, 3, 9)],
+            [CancellationAwardsByFiscalYearRow(2010, 7)],
             CancellationAwardsByFiscalYearRow,
         ),
     ],

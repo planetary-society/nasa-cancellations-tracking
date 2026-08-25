@@ -11,24 +11,16 @@ Each run derives CSVs in `output/` — no accumulated state; `git diff` is the c
 | File                                                             | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `output/terminations.csv`                                        | One row per terminated award: identity, the terminating transaction (date, F/N code, mod, amount, description), the award's current USASpending summary (`award_description`), explicit type code, recipient/place-of-performance locations and congressional districts, total obligated and potential value, how it was detected (`action_code` / `description` / `both`), which door(s) found it (`api` / `mirror`), and any human override status. |
-| `output/descoped.csv`                                            | Same schema as `terminations.csv`, for awards that were pulled back rather than ended: NASA de-scoped part of the work and the award lives on. A row lands here when a human marked it `descoped` in `verification/dropped_award_status.csv`, or when its detection basis is de-scope language and its transaction carries no standalone FPDS `F` code.                                                                                              |
+| `output/descoped.csv`                                            | Same schema as `terminations.csv`, for awards that were pulled back rather than ended: NASA de-scoped part of the work and the award lives on. A row lands here when a human marked it `descoped` in `verification/dropped_award_status.csv`, or when its detection basis is de-scope language and its transaction carries no standalone FPDS `F` code.                                                                                               |
 | `output/doge_claims.csv`                                         | Every NASA claim on DOGE's wall of receipts, beside what USASpending factually says about the same award: found or not, explicit termination transaction or not, latest action, current obligation and end date, type code, recipient/POP locations and districts, potential value, and whether a later transaction vacated the termination. No verdicts.                                                                                             |
 | `output/pop_changes.csv`                                         | A lead sheet, not a termination list: awards whose period of performance was pulled back more than 90 days — original, longest, and current end dates per award, plus the award's current USASpending summary, type code, locations/districts, and amounts. Mirror-only.                                                                                                                                                                              |
-| `output/cancellations_for_convenience_awards_by_fiscal_year.csv` | Distinct NASA awards carrying cancellation signals per fiscal year since FY2010: awards with an FPDS `F` action-code match, awards with a keyword match from the tracker's shared termination-for-convenience vocabulary across FPDS and FABS, and their deduplicated union. Years with no matches are zero-filled. Mirror-only, refreshed by `nasatrack mirror`; the current fiscal year reflects the mirror's partial snapshot.                     |
+| `output/cancellations_for_convenience_awards_by_fiscal_year.csv` | Distinct NASA awards terminated for convenience per fiscal year since FY2010, adjudicated by the same verdict `terminations.csv` publishes under (reversal/vacatur clearing, cause exclusion, the coded-first anchor) with only the window widened. Each award counts once, in the fiscal year of its anchor. Zero-filled; mirror-only, refreshed by `nasatrack mirror`; the current fiscal year is a partial-year figure.                            |
 
-The fiscal-year counts are signal-bearing award counts, not adjudicated cancellation events:
-unlike `terminations.csv`, they do not clear later reversals/vacaturs or apply human overrides,
-so their union should not be expected to equal the row count in `output/terminations.csv`. They
-ask whether an award carried any qualifying signal during each full fiscal year; FY2025 therefore
-includes October 1, 2024 through January 19, 2025, before the main tracker's January 20 start,
-and the same award can appear in more than one fiscal year if it receives another signal later.
-`terminations.csv` instead publishes one current operative termination per award: a later
-reversal or vacatur clears the earlier signal, a later re-termination replaces the earlier
-transaction as the award's anchor, and human exclusions are applied. It also merges the newer API
-part with the monthly mirror part, whereas the fiscal-year counts use only the local mirror. Use
-the fiscal-year counts to measure the broad incidence of cancellation signals and
-`terminations.csv` for the current adjudicated list; align action dates, fiscal years, and source
-snapshot before reconciling them.
+The fiscal-year counts still differ from `terminations.csv` in two bounded ways: they reach
+back to FY2010 where the main list starts January 20, 2025 (so FY2025 also credits anchors from
+October 1, 2024 onward), and they use only the local mirror, without the daily API part's newer
+finds. Within those bounds they are the same adjudication - human overrides and de-scope
+routing included: one anchor per award, never a signal count.
 
 ## The two doors
 

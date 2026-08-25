@@ -71,15 +71,24 @@ def as_date(value) -> date | None:
         return None
 
 
-def in_window(value) -> bool:
+def fiscal_year(value) -> int | None:
+    """The federal fiscal year a date falls in (FY runs Oct 1 - Sep 30), or None."""
+    parsed = as_date(value)
+    if parsed is None:
+        return None
+    return parsed.year + (1 if parsed.month >= 10 else 0)
+
+
+def in_window(value, *, start: date = WINDOW_START) -> bool:
     """True when an action falls on or after the window start.
 
     A missing or unparseable date is NOT in the window: the gate's job is to
     keep pre-window actions out, and an unknown date is not evidence of an
-    in-window one.
+    in-window one. `start` defaults to the tracking window; the historical
+    fiscal-year report passes its own earlier bound.
     """
     parsed = as_date(value)
-    return parsed is not None and parsed >= WINDOW_START
+    return parsed is not None and parsed >= start
 
 
 # ---------------------------------------------------------------------------
@@ -287,12 +296,8 @@ def pg_regex(*patterns: re.Pattern) -> str:
     return "|".join(pattern.pattern.replace(r"\b", r"\y") for pattern in patterns)
 
 
-# The historical statistics need the same positive and exclusion predicates as
-# the Python classifier, while the candidate query deliberately keeps cause in
-# its wider prefilter so `is_cause` remains the final judge there.
-TERMINATION_KEYWORD_SQL = pg_regex(TERM_TEXT)
-CAUSE_TEXT_SQL = pg_regex(CAUSE_TEXT)
-DESCOPE_TEXT_SQL = pg_regex(DESCOPE_TEXT)
+# The mirror's text arm keeps CAUSE_TEXT in the net so that the cause
+# definition has one home: SQL fetches those rows, `is_cause` drops them here.
 TERMINATION_TEXT_SQL = pg_regex(TERM_TEXT, CAUSE_TEXT)
 
 # Wire strings sent verbatim to the USAspending API as `filters.keywords`; they
@@ -430,15 +435,19 @@ def has_standalone_termination_code(award_type: str, action_type: str) -> bool:
     return award_type in FPDS_AWARD_TYPES and action_type.upper() in STANDALONE_TERMINATION_CODES
 
 
-def is_explicit_termination(txn: Txn) -> bool:
+def is_explicit_termination(txn: Txn, *, window_start: date = WINDOW_START) -> bool:
     """True when this transaction explicitly terminates the award for convenience.
 
     Explicit means an FPDS "F" action code or termination language - never an
     inference from the shape of the data. An "N" code alone is not enough (see
     STANDALONE_TERMINATION_CODES): it only ever confirms language, so the N arm
     is subsumed by the language test.
+
+    `window_start` defaults to the tracking window every door publishes under;
+    the historical fiscal-year report adjudicates the same way back to FY2010
+    by passing its own bound.
     """
-    if not in_window(txn.action_date):
+    if not in_window(txn.action_date, start=window_start):
         return False
     if is_cause(txn.description):
         return False
@@ -483,7 +492,7 @@ def _anchor_rank(txn: Txn) -> int:
     return 0 if is_descope(txn.description) else 1
 
 
-def accept_award(txns: Sequence[Txn]) -> Txn | None:
+def accept_award(txns: Sequence[Txn], *, window_start: date = WINDOW_START) -> Txn | None:
     """The award's operative termination, or None if it has none.
 
     Scans the award's history chronologically: the FIRST explicit termination
@@ -510,12 +519,16 @@ def accept_award(txns: Sequence[Txn]) -> Txn | None:
     Reversals are tested first because a rescission names what it rescinds:
     "rescission of the stop work order" matches the termination vocabulary too,
     and reading it as a termination would make a reversal un-reversible.
+
+    `window_start` bounds which transactions may anchor, exactly as it does in
+    `is_explicit_termination`; reversals are read regardless of date, since a
+    rescission before the bound still means the termination it undid is gone.
     """
     anchor: Txn | None = None
     for txn in sorted(txns, key=lambda t: (t.action_date or date.min, t.sort_key)):
         if is_reversal(txn.description) or is_vacatur(txn.description):
             anchor = None
-        elif is_explicit_termination(txn) and (
+        elif is_explicit_termination(txn, window_start=window_start) and (
             anchor is None or _anchor_rank(txn) > _anchor_rank(anchor)
         ):
             anchor = txn
