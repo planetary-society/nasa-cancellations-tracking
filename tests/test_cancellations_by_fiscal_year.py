@@ -66,6 +66,8 @@ def test_mirror_counts_distinct_action_code_keyword_and_union_awards_by_fiscal_y
     assert "ts.transaction_description" in sql
     assert "~* %(keyword_pattern)s" in sql
     assert "!~* %(cause_pattern)s" in sql
+    # The keyword arm vetoes de-scopes; the action-code arm above does not.
+    assert "!~* %(descope_pattern)s" in sql
     assert "count(DISTINCT award_id) FILTER (WHERE by_action_code)" in normalized_sql
     assert "count(DISTINCT award_id) FILTER (WHERE by_keyword)" in normalized_sql
     assert "count(DISTINCT award_id) FILTER (WHERE by_action_code OR by_keyword)" in normalized_sql
@@ -82,4 +84,5 @@ def test_mirror_counts_distinct_action_code_keyword_and_union_awards_by_fiscal_y
         "action_codes": ["F"],
         "keyword_pattern": criteria.TERMINATION_KEYWORD_SQL,
         "cause_pattern": criteria.CAUSE_TEXT_SQL,
+        "descope_pattern": criteria.DESCOPE_TEXT_SQL,
     }

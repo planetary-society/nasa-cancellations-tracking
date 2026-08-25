@@ -9,6 +9,7 @@ from nasatrack.criteria import (
     is_explicit_termination,
     mod_sort_key,
 )
+from tests.test_descope import DESCOPE_NOTICE
 
 
 def txn(day, *, action_type="", description="", sort_key="", award_type="contract"):
@@ -115,6 +116,33 @@ def test_first_coded_action_supersedes_earlier_stop_work_language():
         description="TERMINATION FOR CONVENIENCE AGREEMENT",
     )
     assert accept_award([grant_coded, grant_notice]) is grant_notice
+
+
+def test_a_later_full_termination_supersedes_a_descope_anchor():
+    # The de-scope notice matches the termination vocabulary through its
+    # stop-work alternative, so it would otherwise anchor the award at a
+    # partial pull-back and hide the full termination that followed. Neither
+    # row carries a code, so nothing else would move the anchor.
+    notice = txn("2025-03-18", action_type="M", description=DESCOPE_NOTICE)
+    full = txn("2025-09-15", description="TERMINATION FOR CONVENIENCE")
+    assert accept_award([full, notice]) is full
+
+
+def test_a_descope_only_history_still_anchors_on_the_notice():
+    # Acceptance is unchanged by the de-scope vocabulary: the award is still a
+    # detected termination action. Routing de-scopes out of the headline count
+    # happens at publication, not here.
+    notice = txn("2025-03-18", action_type="M", description=DESCOPE_NOTICE)
+    assert accept_award([notice]) is notice
+
+
+def test_a_coded_descope_anchor_is_not_superseded_by_later_language():
+    # An F code is the reported termination act whatever prose rides along -
+    # the code itself reads "TERMINATE FOR CONVENIENCE (COMPLETE OR PARTIAL)".
+    # A coded anchor never moves for language alone, de-scope or not.
+    coded = txn("2025-05-01", action_type="F", description=DESCOPE_NOTICE)
+    later = txn("2025-09-15", description="TERMINATION FOR CONVENIENCE")
+    assert accept_award([later, coded]) is coded
 
 
 def test_vacatur_clears_the_termination():

@@ -158,8 +158,9 @@ OVERRIDE_STATUS_COLUMN = "Tracking Status"
 
 # The statuses that say "this is not an active cancellation": out of scope,
 # vacated by a court, or continued after the flag. Every other status the file
-# uses (closed_out, descoped, needs_manual_review) is an annotation on a row
-# that stays.
+# uses (closed_out, descoped, needs_manual_review) is carried on a row that
+# stays - though `descoped` is more than an annotation now: `partition_descoped`
+# below reads it and routes the row to descoped.csv instead of terminations.csv.
 EXCLUDING_STATUSES = frozenset({"excluded_by_design", "vacated", "continued"})
 
 
@@ -199,3 +200,60 @@ def apply_overrides(rows, overrides: dict[str, str]) -> tuple[list[TerminationRo
         if identity not in matched
     ]
     return kept, warnings
+
+
+# ---------------------------------------------------------------------------
+# De-scoped awards, published apart
+# ---------------------------------------------------------------------------
+
+# The human status that says "work was pulled out, the award lives on".
+DESCOPED_STATUS = "descoped"
+
+
+def is_descoped(row: TerminationRow) -> bool:
+    """True when this row is a partial de-scope rather than a termination.
+
+    Human judgement wins in BOTH directions and is tested first. A `descoped`
+    override moves the row even when its transaction carries an F code -
+    NNG09FA40C is the case: an EO 14148 mod de-scoped the DEI work off an IRIS
+    contract that went on collecting new obligations, and only a human reading
+    the award could see that. Any OTHER explicit status (termination_confirmed,
+    closed_out, needs_manual_review) is a human who looked at this award and did
+    not call it a de-scope, so it pins the row to terminations.csv and the
+    classifier below never runs.
+
+    With no override the row is classified from its language, but never over a
+    standalone F code: "F" is TERMINATE FOR CONVENIENCE (COMPLETE OR PARTIAL) -
+    the reported termination act itself - so "FINALIZE THE PARTIAL TERMINATION
+    SETTLEMENT" on an F-coded transaction is a termination that happened to be
+    partial, not a de-scope. Grants and prose-only contracts have no such code
+    to beat, which is what `criteria.has_standalone_termination_code` is
+    checking for.
+
+    The text read is `transaction_description` alone - the detection basis, the
+    text that made this award a row at all. `award_description` is the award's
+    current USASpending summary, written for the award as a whole and refreshed
+    long after the action; letting it classify would let today's summary
+    reclassify last year's termination.
+    """
+    if row.override_status == DESCOPED_STATUS:
+        return True
+    if row.override_status:
+        return False
+    return criteria.is_descope(
+        row.transaction_description
+    ) and not criteria.has_standalone_termination_code(row.award_type, row.action_type)
+
+
+def partition_descoped(rows) -> tuple[list[TerminationRow], list[TerminationRow]]:
+    """(terminations, descoped), preserving the committed order of both.
+
+    Runs after `apply_overrides`, so rows an excluding status already dropped
+    never reach either side. Both lists come out in the order `merge` put them
+    in: splitting a sorted list keeps each half sorted.
+    """
+    kept: list[TerminationRow] = []
+    descoped: list[TerminationRow] = []
+    for row in rows:
+        (descoped if is_descoped(row) else kept).append(row)
+    return kept, descoped

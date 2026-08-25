@@ -7,6 +7,7 @@ Each subcommand is one door plus the deterministic merge that publishes:
            (also writes pop_changes.csv and the fiscal-year counts)
     doge   fetch -> doge_claims.csv                          (independent)
     merge  parts + human overrides -> terminations.csv       (no network)
+           (also writes descoped.csv, the awards pulled back but not ended)
     daily  doge, then api (which ends in merge)              (what CI runs)
 
 `daily` never touches the mirror: CI has no route to the mirror host, and the
@@ -33,6 +34,7 @@ OUTPUT_DIR = Path("output")
 PARTS_DIR = OUTPUT_DIR / "parts"
 
 TERMINATIONS_CSV = OUTPUT_DIR / "terminations.csv"
+DESCOPED_CSV = OUTPUT_DIR / "descoped.csv"
 DOGE_CSV = OUTPUT_DIR / "doge_claims.csv"
 POP_CHANGES_CSV = OUTPUT_DIR / "pop_changes.csv"
 FISCAL_YEAR_CSV = OUTPUT_DIR / "cancellations_for_convenience_awards_by_fiscal_year.csv"
@@ -65,22 +67,27 @@ def merge_step(
     mirror_run=MIRROR_RUN,
     overrides=OVERRIDES_CSV,
     output=TERMINATIONS_CSV,
+    descoped_output=DESCOPED_CSV,
 ) -> None:
-    """Publish terminations.csv from the two parts and the human overrides."""
+    """Publish terminations.csv and descoped.csv from the two parts and the human overrides."""
     api_rows = read_csv(api_part, TerminationRow)
     mirror_rows = read_csv(mirror_part, TerminationRow)
     rows, warnings = terminations.apply_overrides(
         terminations.merge(api_rows, mirror_rows), terminations.load_overrides(overrides)
     )
+    rows, descoped = terminations.partition_descoped(rows)
     # The same tripwire the fetch doors carry: the published file is the point
     # of this program, and every part it is built from only ever gains rows.
-    # Zero is a broken read of the parts, not an empty week.
+    # Zero is a broken read of the parts, not an empty week. It guards the
+    # terminations rows only: the de-scoped set is a handful of awards and can
+    # legitimately be small or empty.
     if not rows:
         raise SystemExit(
             "merge produced 0 rows - refusing to publish an empty terminations.csv; "
             "the part files or the override file look wrong"
         )
     write_csv(output, rows)
+    write_csv(descoped_output, descoped)
 
     for warning in warnings:
         print(warning, file=sys.stderr)
@@ -90,6 +97,7 @@ def merge_step(
         f"{Path(output).name}: {len(rows)} rows "
         f"(api {len(api_rows)}, mirror {len(mirror_rows)}, both {both})"
     )
+    print(f"{Path(descoped_output).name}: {len(descoped)} rows")
 
 
 def _write(path, rows, *, order=False) -> int:

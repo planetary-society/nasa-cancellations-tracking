@@ -73,6 +73,13 @@ CASES = [
     ("language, no code", row("TERMINATION FOR CONVENIENCE OF THE GOVERNMENT"), True),
     ("idv with an f code", row(action_type="F", type_code="IDV_B", description="MOD"), True),
     ("stop-work order", row("STOP-WORK ORDER ISSUED"), True),
+    # A de-scope is a detected termination action here and stays one: the
+    # de-scope vocabulary partitions the published output, it does not decide.
+    (
+        "descope stop-work notice",
+        row("STOP WORK NOTICE ISSUED WITH NOTIFICATION OF INTENT TO DESCOPE"),
+        True,
+    ),
     ("termination notice", row("TERMINATION NOTICE ISSUED: IN SPACE PRODUCTION"), True),
     # NASA's misspellings, all field-observed in the archived descriptions.
     ("misspelled convience", row("TERMINATE FOR CONVIENCE"), True),

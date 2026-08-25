@@ -19,6 +19,7 @@ from nasatrack.schema import (
     write_csv,
 )
 from tests.test_accept_award import txn
+from tests.test_descope import DESCOPE_NOTICE
 from tests.test_merge import row
 from tests.test_overrides import write_overrides
 from tests.test_schema import a_pop_change
@@ -39,6 +40,14 @@ def test_merge_step_publishes_from_the_parts(tmp_path, capsys):
         [
             row("CONT_AWD_A", source="mirror", award_id="A", day="2025-06-01"),
             row("CONT_AWD_C", source="mirror", award_id="C", day="2025-02-01"),
+            row(
+                "CONT_AWD_D",
+                source="mirror",
+                award_id="D",
+                day="2025-04-01",
+                action_type="M",
+                transaction_description=DESCOPE_NOTICE,
+            ),
         ],
     )
     mirror_run = tmp_path / "parts" / "mirror_run.json"
@@ -48,6 +57,7 @@ def test_merge_step_publishes_from_the_parts(tmp_path, capsys):
         [("C", "vacated"), ("B", "still_terminated"), ("GONE", "continued")],
     )
     output = tmp_path / "terminations.csv"
+    descoped_output = tmp_path / "descoped.csv"
 
     merge_step(
         api_part=api_part,
@@ -55,6 +65,7 @@ def test_merge_step_publishes_from_the_parts(tmp_path, capsys):
         mirror_run=mirror_run,
         overrides=overrides,
         output=output,
+        descoped_output=descoped_output,
     )
 
     published = read_csv(output, TerminationRow)
@@ -62,9 +73,14 @@ def test_merge_step_publishes_from_the_parts(tmp_path, capsys):
         ("CONT_AWD_B", "api", "still_terminated"),
         ("CONT_AWD_A", "api;mirror", ""),
     ]
+    # The de-scope leaves terminations.csv entirely and publishes on its own.
+    assert [r.award_key for r in read_csv(descoped_output, TerminationRow)] == ["CONT_AWD_D"]
 
     captured = capsys.readouterr()
-    assert captured.out.strip() == "terminations.csv: 2 rows (api 2, mirror 2, both 1)"
+    assert captured.out.splitlines() == [
+        "terminations.csv: 2 rows (api 2, mirror 3, both 1)",
+        "descoped.csv: 1 rows",
+    ]
     assert "unmatched override: GONE (continued)" in captured.err
     assert "mirror part from 2026-08-01T12:00:00+00:00, 2 rows" in captured.err
 

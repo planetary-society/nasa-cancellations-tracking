@@ -422,6 +422,13 @@ def fetch_pop_changes() -> list[PopChangeRow]:
 # modification field; the keyword signal includes both FPDS and FABS. Both
 # signals reuse criteria.py's shared verdict vocabulary. The action-date bound
 # is required for the mirror's partial indexes; fiscal_year alone is not enough.
+#
+# The keyword arm carries both exclusions the language classifier applies -
+# cause/default and de-scope - so a "stop work notice ... intent to descope"
+# row cannot inflate a fiscal year's count with a partial pull-back. The
+# action-code arm carries neither: an F code is the reported termination act
+# whatever prose accompanies it, and code "F" itself reads "TERMINATE FOR
+# CONVENIENCE (COMPLETE OR PARTIAL)".
 SQL_CANCELLATIONS_FOR_CONVENIENCE_BY_FY = f"""
 WITH fiscal_years AS (
     SELECT generate_series(
@@ -435,7 +442,8 @@ signals AS (
            source.is_fpds IS TRUE
                AND source.action_type = ANY(%(action_codes)s) AS by_action_code,
            source.description ~* %(keyword_pattern)s
-               AND source.description !~* %(cause_pattern)s AS by_keyword
+               AND source.description !~* %(cause_pattern)s
+               AND source.description !~* %(descope_pattern)s AS by_keyword
     FROM (
         SELECT ts.award_id,
                ts.fiscal_year AS fy,
@@ -488,6 +496,7 @@ def fetch_cancellations_for_convenience_awards_by_fy(
                 "action_codes": list(criteria.STANDALONE_TERMINATION_CODES),
                 "keyword_pattern": criteria.TERMINATION_KEYWORD_SQL,
                 "cause_pattern": criteria.CAUSE_TEXT_SQL,
+                "descope_pattern": criteria.DESCOPE_TEXT_SQL,
             },
         )
         return [

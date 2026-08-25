@@ -191,6 +191,16 @@ TERM_TEXT = re.compile(
 # methodology (commit 08a52cf) rather than counted as a policy cancellation.
 CAUSE_TEXT = re.compile(r"terminat\w*\s+for\s+(?:cause|default)", re.IGNORECASE)
 
+# A partial de-scope, not a full termination: NASA pulls work out of an award
+# ("STOP WORK NOTICE ISSUED WITH NOTIFICATION OF INTENT TO DESCOPE") and the
+# award lives on. TERM_TEXT's `stop[\s-]?work` alternative matches those, so
+# this vocabulary is what tells the two apart. Restored from the pre-rewrite
+# vocabulary (9d585ab) with the stem widened - `scop\w*` for the bare `scope`
+# it had - because "descoped" and "de-scoping" are both field-observed and
+# neither ends in a bare "scope". The leading `\b` is what keeps "telescope"
+# out: without it every "TELESCOPE OPERATIONS" row reads as a de-scope.
+DESCOPE_TEXT = re.compile(r"\bde[\s-]?scop\w*|partial\s+termination|reduce\s+scope", re.IGNORECASE)
+
 # A court vacated the termination - a legal fact that outranks later activity.
 VACATUR_TEXT = re.compile(r"\bvacat\w*", re.IGNORECASE)
 
@@ -226,6 +236,11 @@ def is_termination(text) -> bool:
 def is_cause(text) -> bool:
     """True when this text describes a termination for cause or default."""
     return bool(CAUSE_TEXT.search(text or ""))
+
+
+def is_descope(text) -> bool:
+    """True when this text describes a partial de-scope, not a full termination."""
+    return bool(DESCOPE_TEXT.search(text or ""))
 
 
 def is_reversal(text) -> bool:
@@ -277,6 +292,7 @@ def pg_regex(*patterns: re.Pattern) -> str:
 # its wider prefilter so `is_cause` remains the final judge there.
 TERMINATION_KEYWORD_SQL = pg_regex(TERM_TEXT)
 CAUSE_TEXT_SQL = pg_regex(CAUSE_TEXT)
+DESCOPE_TEXT_SQL = pg_regex(DESCOPE_TEXT)
 TERMINATION_TEXT_SQL = pg_regex(TERM_TEXT, CAUSE_TEXT)
 
 # Wire strings sent verbatim to the USAspending API as `filters.keywords`; they
@@ -403,6 +419,17 @@ def has_termination_code(txn: Txn) -> bool:
     return txn.action_type.upper() in TERMINATION_ACTION_CODES
 
 
+def has_standalone_termination_code(award_type: str, action_type: str) -> bool:
+    """True when this action's code terminates on its own (F, on an FPDS award).
+
+    The FABS guard `has_termination_code` applies: an "F" on a grant row means
+    nothing. Only F stands alone - see STANDALONE_TERMINATION_CODES for why N
+    does not. Taken field by field rather than off a `Txn` so the published-row
+    side (`terminations.is_descoped`) can ask the same question.
+    """
+    return award_type in FPDS_AWARD_TYPES and action_type.upper() in STANDALONE_TERMINATION_CODES
+
+
 def is_explicit_termination(txn: Txn) -> bool:
     """True when this transaction explicitly terminates the award for convenience.
 
@@ -415,7 +442,7 @@ def is_explicit_termination(txn: Txn) -> bool:
         return False
     if is_cause(txn.description):
         return False
-    if has_termination_code(txn) and txn.action_type.upper() in STANDALONE_TERMINATION_CODES:
+    if has_standalone_termination_code(txn.award_type, txn.action_type):
         return True
     return is_termination(txn.description)
 
@@ -442,21 +469,43 @@ def group_by_award(txns) -> dict[str, list[Txn]]:
     return groups
 
 
+def _anchor_rank(txn: Txn) -> int:
+    """Anchor strength: coded (2) > full-termination language (1) > de-scope language (0).
+
+    A stronger transaction supersedes a weaker anchor; equal strength leaves the
+    earlier one standing, so the anchor is the first transaction at its rank.
+    Rank 2 is `has_termination_code` - F or N - not the standalone set: an
+    N-coded anchor is still a reason-for-modification code, so it holds its date
+    against later language even though an N alone could not have anchored.
+    """
+    if has_termination_code(txn):
+        return 2
+    return 0 if is_descope(txn.description) else 1
+
+
 def accept_award(txns: Sequence[Txn]) -> Txn | None:
     """The award's operative termination, or None if it has none.
 
     Scans the award's history chronologically: the FIRST explicit termination
-    sets the anchor, a later reversal or vacatur clears it, and the first
-    CODED termination action supersedes an earlier language-only anchor - the
-    reason-for-modification code is the unambiguous signal, where stop-work
-    language can precede the formal act. The date of record is when the
-    termination was issued: 80GSFC23CA001 got a stop-work notice on
-    2025-03-18, mod 00009's F code on 2025-05-01, and a year of settlement
-    mods after - it reports 2025-05-01, and neither the earlier prose nor the
-    later settlements move that. An award no code ever confirms (every grant -
-    FABS has no code - and prose-only contracts) anchors on its earliest
-    language. terminate->rescind still drops out entirely, and terminate->
-    rescind->terminate reports the post-rescission termination.
+    sets the anchor, a later reversal or vacatur clears it, and a later
+    termination supersedes the anchor only when `_anchor_rank` puts it strictly
+    above - the reason-for-modification code is the unambiguous signal, where
+    stop-work language can precede the formal act, and de-scope language is the
+    weakest reading of all. The date of record is when the termination was
+    issued: 80GSFC23CA001 got a stop-work notice on 2025-03-18, mod 00009's F
+    code on 2025-05-01, and a year of settlement mods after - it reports
+    2025-05-01, and neither the earlier prose nor the later settlements move
+    that. An award no code ever confirms (every grant - FABS has no code - and
+    prose-only contracts) anchors on its earliest language. terminate->rescind
+    still drops out entirely, and terminate->rescind->terminate reports the
+    post-rescission termination.
+
+    De-scope language sits below full-termination language because "stop work
+    notice issued with notification of intent to descope" matches the
+    termination vocabulary through its stop-work alternative: left as the
+    anchor it would hold the award at a partial pull-back and mask a later
+    language-only full termination. A CODED de-scope still outranks both - an
+    F-coded de-scope is the date the formal act was reported.
 
     Reversals are tested first because a rescission names what it rescinds:
     "rescission of the stop work order" matches the termination vocabulary too,
@@ -467,7 +516,7 @@ def accept_award(txns: Sequence[Txn]) -> Txn | None:
         if is_reversal(txn.description) or is_vacatur(txn.description):
             anchor = None
         elif is_explicit_termination(txn) and (
-            anchor is None or (has_termination_code(txn) and not has_termination_code(anchor))
+            anchor is None or _anchor_rank(txn) > _anchor_rank(anchor)
         ):
             anchor = txn
     return anchor

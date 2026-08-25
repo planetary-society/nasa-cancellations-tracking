@@ -2,7 +2,7 @@
 
 import pytest
 
-from nasatrack.criteria import API_KEYWORDS, is_cause, is_termination
+from nasatrack.criteria import API_KEYWORDS, is_cause, is_descope, is_termination
 
 # Spellings observed in the archived corpus of source descriptions.
 OBSERVED_MISSPELLINGS = [
@@ -66,6 +66,37 @@ def test_cause_language_is_recognised(text):
 
 def test_convenience_language_is_not_cause():
     assert not is_cause("terminate for convenience of the government")
+
+
+# A partial de-scope leaves the award alive. Its stop-work prose matches
+# TERM_TEXT, so this vocabulary is the only thing separating the two.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "STOP WORK NOTICE ISSUED WITH NOTIFICATION OF INTENT TO DESCOPE",
+        "INTENT TO DE-SCOPE-",
+        "de-scoped",
+        "FINALIZE THE PARTIAL TERMINATION SETTLEMENT",
+        "reduce scope",
+    ],
+)
+def test_descope_language_is_recognised(text):
+    assert is_descope(text)
+
+
+# "Telescope" is what the leading word boundary is there for; a full
+# termination is not a de-scope however it is worded.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "TELESCOPE OPERATIONS",
+        "TERMINATE FOR CONVENIENCE",
+        "",
+        None,
+    ],
+)
+def test_non_descope_language_does_not_match(text):
+    assert not is_descope(text)
 
 
 @pytest.mark.parametrize("keyword", API_KEYWORDS)
