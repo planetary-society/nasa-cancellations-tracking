@@ -138,7 +138,7 @@ def test_mirror_door_writes_its_three_outputs(monkeypatch, tmp_path, capsys):
     assert capsys.readouterr().out.splitlines() == [
         "mirror_terminations.csv: 1 rows",
         "pop_changes.csv: 1 rows",
-        "by_fiscal_year.csv: 17 rows",
+        f"by_fiscal_year.csv: {len(counts)} rows",
     ]
 
 
